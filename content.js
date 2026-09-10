@@ -29,79 +29,85 @@
   }
 
   // ==========================================
-  // UNIVERSAL ASSET NORMALIZER & DETECTOR
+  // FOOLPROOF ACTIVE TAB DETECTOR
   // ==========================================
-  function parseAssetName(str) {
+  function parseCleanName(str) {
     if (!str || typeof str !== "string") return null;
-    let clean = str.replace(/\b\d{1,3}%\b/g, "").replace(/[\n\r\t]/g, " ").trim();
-    clean = clean.replace(/PAIR INFORMATION/gi, "").replace(/BEGINNING OF TRADE/gi, "").trim();
+    let s = str.replace(/\b\d{1,3}%\b/g, "").replace(/[\n\r\t]/g, " ").trim();
+    s = s.replace(/PAIR INFORMATION/gi, "").replace(/BEGINNING OF TRADE/gi, "").trim();
 
-    // 1. Currency pairs: USD/BRL (OTC), USD/BDT, EUR/USD OTC
-    const pairMatch = clean.match(/([A-Z]{3}\/[A-Z]{3}(?:\s*(?:\(OTC\)|OTC))?)/i);
+    // Ignore known system terms
+    if (/^(settings|store|tick|live|demo|trade|chart|deposit)$/i.test(s)) return null;
+
+    // Currency pairs: USD/BRL (OTC), USD/BDT (OTC), NZD/JPY (OTC)
+    const pairMatch = s.match(/([A-Z]{3}\/[A-Z]{3}(?:\s*(?:\(OTC\)|OTC))?)/i);
     if (pairMatch) return pairMatch[1].trim();
 
-    // 2. Cryptos & Commodities with OTC: Cosmos (OTC), Bitcoin (OTC), Gold (OTC)
-    const otcMatch = clean.match(/([A-Za-z0-9\.\-\s]+(?:\(OTC\)|OTC))/i);
+    // Single-word Cryptos/Commodities: Cosmos (OTC), Bitcoin (OTC), Gold (OTC)
+    const otcMatch = s.match(/([A-Za-z0-9\.\-\s]+(?:\(OTC\)|OTC))/i);
     if (otcMatch) {
       const name = otcMatch[1].trim();
-      if (name.length >= 3 && name.length <= 25 && !/^(LIVE|DEMO|TRADE|CHART|DEPOSIT)$/i.test(name)) {
-        return name;
-      }
+      if (name.length >= 3 && name.length <= 25) return name;
     }
-
     return null;
   }
 
   function detectActiveAssetFromDOM() {
-    // 1. Look for the active tab (the one with the chevron or close icon)
-    const tabCandidates = document.querySelectorAll(
-      "[class*='tab'], [class*='item'], div[role='tab'], button[role='tab']"
-    );
-
-    for (const el of tabCandidates) {
+    // Look at top header tab bar (within top 75px of the viewport)
+    const candidates = document.querySelectorAll("div, button, a");
+    for (const el of candidates) {
       if (el.closest("#qx-assistant-panel")) continue;
-      const svgCount = el.querySelectorAll("svg").length;
-      const hasChevronOrClose = el.querySelector("[class*='close'], [class*='chevron'], [class*='arrow'], svg path[d*='M']");
-      const cls = (el.className || "") + " " + (el.getAttribute("aria-selected") || "");
-      const isActive = /active|selected|current/i.test(cls);
+      const rect = el.getBoundingClientRect();
+      if (rect.top < 0 || rect.top > 75 || rect.height < 20 || rect.width < 50) continue;
 
-      const name = parseAssetName(el.innerText || el.textContent || "");
-      if (name && (isActive || svgCount >= 2 || hasChevronOrClose)) {
-        return name;
+      // In Quotex, the active tab has the close button (x) AND chevron (v) -> at least 2 SVGs
+      const svgs = el.querySelectorAll("svg");
+      if (svgs.length >= 2) {
+        const name = parseCleanName(el.innerText || el.textContent || "");
+        if (name) return name;
+      }
+    }
+
+    // Fallback: search any element having active/selected class in top area
+    for (const el of candidates) {
+      if (el.closest("#qx-assistant-panel")) continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.top > 75) continue;
+      const cls = (el.className || "") + " " + (el.getAttribute("aria-selected") || "");
+      if (/active|selected/i.test(cls)) {
+        const name = parseCleanName(el.innerText || el.textContent || "");
+        if (name) return name;
       }
     }
 
     return null;
   }
 
-  let activeAsset = detectActiveAssetFromDOM() || "USD/BRL (OTC)";
+  let activeAsset = detectActiveAssetFromDOM() || "Cosmos (OTC)";
   let state = getAssetState(activeAsset);
 
   function switchAsset(newName) {
     if (!newName || newName === activeAsset) return;
-    console.log("[QX-Assistant] Switched active asset to:", newName);
     activeAsset = newName;
     state = getAssetState(activeAsset);
     saveCache();
     updateUI();
   }
 
-  // CAPTURE-PHASE CLICK: Catches tab clicks before Quotex can stopPropagation()
+  // Instant capture click on tabs
   document.addEventListener("click", (e) => {
     if (e.target.closest("#qx-assistant-panel")) return;
     let node = e.target;
     for (let i = 0; i < 4 && node && node !== document.body; i++) {
-      const txt = node.innerText || node.textContent || "";
-      const asset = parseAssetName(txt);
-      if (asset) {
-        switchAsset(asset);
+      const name = parseCleanName(node.innerText || node.textContent || "");
+      if (name) {
+        switchAsset(name);
         break;
       }
       node = node.parentElement;
     }
   }, true);
 
-  // Background polling backup for DOM changes
   setInterval(() => {
     const domAsset = detectActiveAssetFromDOM();
     if (domAsset && domAsset !== activeAsset) {
@@ -110,7 +116,7 @@
   }, 400);
 
   // ==========================================
-  // REAL-TIME ZERO-WAIT PRICE INGESTION
+  // REAL-TIME PRICE & HISTORY (WITH PRICE SANITY GUARD)
   // ==========================================
   function ingestFastTick(price, time) {
     state.livePrice = price;
@@ -129,7 +135,6 @@
       saveCache();
     }
 
-    // Instant UI paint
     const priceEl = document.getElementById("qx-ui-price");
     if (priceEl) priceEl.textContent = price.toFixed(5);
     updateAnalysis();
@@ -137,6 +142,16 @@
 
   function ingestHistory(candles) {
     if (!candles || candles.length === 0) return;
+
+    // SANITY GUARD: Reject candle packets from other assets (e.g. 126.0 when Cosmos is 1.87)
+    if (state.livePrice !== null) {
+      const sampleClose = candles[candles.length - 1].close;
+      const ratio = sampleClose / state.livePrice;
+      if (ratio < 0.5 || ratio > 2.0) {
+        return; // Mismatched asset history discarded
+      }
+    }
+
     const map = new Map();
     state.candles1m.forEach(c => map.set(c.time, c));
     candles.forEach(c => map.set(c.time, c));
@@ -206,7 +221,7 @@
       <div id="qx-panel-header">
         <div id="qx-panel-title">
           <span class="qx-badge">READ ONLY</span>
-          <strong>QX Assistant</strong> <small>v1.3.2</small>
+          <strong>QX Assistant</strong> <small>v1.3.3</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-reset-pos" title="Reset Position">[R]</button>
@@ -254,7 +269,6 @@
     `;
     document.body.appendChild(panel);
 
-    // Restore saved position
     const savedPos = localStorage.getItem("__qx_panel_pos__");
     if (savedPos) {
       try {
@@ -265,7 +279,6 @@
       } catch (_) {}
     }
 
-    // Header drag handler
     const header = panel.querySelector("#qx-panel-header");
     let isDragging = false;
     let dragOffset = { x: 0, y: 0 };
@@ -347,7 +360,7 @@
     if (rsiEl) rsiEl.textContent = rsi !== null ? rsi.toFixed(1) : "--";
 
     const m15El = document.getElementById("qx-ui-15m");
-    if (m15El) m15El.textContent = sr.s && sr.r ? `S: ${sr.s.toFixed(3)} | R: ${sr.r.toFixed(3)}` : "Accumulating";
+    if (m15El) m15El.textContent = sr.s && sr.r ? `S: ${sr.s.toFixed(4)} | R: ${sr.r.toFixed(4)}` : "Accumulating";
 
     const m5El = document.getElementById("qx-ui-5m");
     if (m5El) m5El.textContent = m5List.length >= 2 ? (m5List[m5List.length - 1].close > m5List[0].close ? "Bullish" : "Bearish") : "Neutral";
@@ -355,7 +368,8 @@
 
   function updateUI() {
     const assetEl = document.getElementById("qx-ui-asset");
-    if (assetEl) assetEl.textContent = activeAsset;
+    if (!assetEl) return;
+    assetEl.textContent = activeAsset;
 
     if (state.livePrice !== null) {
       const priceEl = document.getElementById("qx-ui-price");
@@ -369,8 +383,6 @@
       ingestFastTick(e.data.payload.price, e.data.payload.timestamp);
     } else if (e.data?.type === "QX_HISTORICAL_CANDLES") {
       ingestHistory(e.data.payload);
-    } else if (e.data?.type === "QX_WS_ASSET_DETECTED") {
-      switchAsset(e.data.payload);
     }
   });
 })();

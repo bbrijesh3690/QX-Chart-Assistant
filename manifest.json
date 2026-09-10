@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.3.2",
-  "description": "Real-time multi-timeframe assistant with zero-latency price stream and instant tab switching.",
+  "version": "1.3.3",
+  "description": "Read-only multi-timeframe assistant with isolated asset history and precise tab locking.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",
