@@ -1,0 +1,152 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>QX Analysis Engine - Interactive Visualizer</title>
+  <style>
+    body { background: #0c0e14; color: #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, sans-serif; display: flex; flex-direction: column; align-items: center; margin: 0; padding: 20px; }
+    #wrapper { display: flex; gap: 20px; max-width: 1050px; width: 100%; }
+    canvas { background: #131722; border: 1px solid #232838; border-radius: 8px; }
+    #hud { width: 300px; background: #181d2a; border: 1px solid #283245; border-radius: 8px; padding: 16px; font-size: 13px; }
+    .row { display: flex; justify-content: space-between; margin-bottom: 8px; }
+    .badge { padding: 2px 8px; border-radius: 4px; font-weight: bold; }
+    .title { font-size: 11px; color: #64748b; font-weight: bold; letter-spacing: 0.5px; margin: 12px 0 6px 0; }
+    #score-fill { height: 6px; border-radius: 3px; background: #38bdf8; transition: width 0.3s; }
+    #score-track { background: #232838; height: 6px; border-radius: 3px; overflow: hidden; margin-top: 4px; }
+  </style>
+</head>
+<body>
+  <h2>QX Confluence Engine Visualizer</h2>
+  <div id="wrapper">
+    <canvas id="chart" width="700" height="460"></canvas>
+    <div id="hud">
+      <div class="row"><span>Asset:</span> <strong>USD/PKR (OTC)</strong></div>
+      <div class="row"><span>Live Price:</span> <strong id="h-price" style="color:#38bdf8; font-family:monospace; font-size:16px;">--</strong></div>
+      <div class="title">CONFLUENCE ENGINE</div>
+      <div class="row"><span>Setup:</span> <span id="h-setup" class="badge">Scanning...</span></div>
+      <div class="row"><span>Confluence Score:</span> <strong id="h-score">0 / 5</strong></div>
+      <div id="score-track"><div id="score-fill" style="width: 0%;"></div></div>
+      <div class="title">TIMEFRAME SIGNALS</div>
+      <div class="row"><span>15m Macro Trend:</span> <strong id="h-15m">Neutral</strong></div>
+      <div class="row"><span>5m Intermediate:</span> <strong id="h-5m">Neutral</strong></div>
+      <div class="row"><span>1m RSI (14):</span> <strong id="h-rsi">--</strong></div>
+      <div class="row"><span>Dynamic S/R:</span> <span id="h-sr" style="font-family:monospace; font-size:11px;">--</span></div>
+    </div>
+  </div>
+
+  <script>
+    const cvs = document.getElementById("chart");
+    const ctx = cvs.getContext("2d");
+    let price = 288.450;
+    const candles = [];
+    const maxBars = 35;
+
+    for (let i = 0; i < maxBars; i++) {
+      const o = price;
+      const c = o + (Math.random() - 0.49) * 0.080;
+      const h = Math.max(o, c) + Math.random() * 0.030;
+      const l = Math.min(o, c) - Math.random() * 0.030;
+      candles.push({ open: o, high: h, low: l, close: c });
+      price = c;
+    }
+
+    function calcRSI(len = 14) {
+      if (candles.length < len + 1) return 50;
+      let g = 0, l = 0;
+      for (let i = candles.length - len; i < candles.length; i++) {
+        const diff = candles[i].close - candles[i - 1].close;
+        if (diff >= 0) g += diff; else l -= diff;
+      }
+      return 100 - (100 / (1 + (g / (l || 0.0001))));
+    }
+
+    function render() {
+      // Step Live Price
+      price += (Math.random() - 0.495) * 0.015;
+      const cur = candles[candles.length - 1];
+      cur.high = Math.max(cur.high, price);
+      cur.low = Math.min(cur.low, price);
+      cur.close = price;
+
+      ctx.clearRect(0, 0, cvs.width, cvs.height);
+
+      // Scales
+      const highs = candles.map(c => c.high);
+      const lows = candles.map(c => c.low);
+      const maxP = Math.max(...highs) + 0.020;
+      const minP = Math.min(...lows) - 0.020;
+      const hScale = (cvs.height - 120) / (maxP - minP);
+      const toY = p => (cvs.height - 130) - (p - minP) * hScale;
+
+      // Draw Support & Resistance Bands
+      const res = Math.max(...candles.slice(-20).map(c => c.high));
+      const sup = Math.min(...candles.slice(-20).map(c => c.low));
+      ctx.fillStyle = "rgba(239, 68, 68, 0.15)";
+      ctx.fillRect(0, toY(res) - 2, cvs.width, 4);
+      ctx.fillStyle = "rgba(16, 185, 129, 0.15)";
+      ctx.fillRect(0, toY(sup) - 2, cvs.width, 4);
+
+      // Draw Candles
+      const barW = 12;
+      const gap = 18;
+      candles.forEach((c, idx) => {
+        const x = 30 + idx * gap;
+        const yO = toY(c.open);
+        const yC = toY(c.close);
+        const isGreen = c.close >= c.open;
+        ctx.strokeStyle = isGreen ? "#10b981" : "#ef4444";
+        ctx.fillStyle = ctx.strokeStyle;
+        ctx.beginPath();
+        ctx.moveTo(x, toY(c.high));
+        ctx.lineTo(x, toY(c.low));
+        ctx.stroke();
+        ctx.fillRect(x - barW / 2, Math.min(yO, yC), barW, Math.max(Math.abs(yC - yO), 1));
+      });
+
+      // Sub-Chart RSI Area
+      const rsi = calcRSI(14);
+      const rsiY = cvs.height - 40;
+      ctx.fillStyle = "#1e222d";
+      ctx.fillRect(0, cvs.height - 80, cvs.width, 80);
+      ctx.strokeStyle = "#374151";
+      ctx.strokeRect(0, cvs.height - 80, cvs.width, 80);
+      ctx.fillStyle = "#94a3b8";
+      ctx.fillText("RSI (14): " + rsi.toFixed(1), 20, cvs.height - 60);
+
+      // Evaluate Confluence
+      const trend15m = cur.close >= candles[0].open ? "Bullish" : "Bearish";
+      const trend5m = cur.close >= candles[candles.length - 5].close ? "Bullish" : "Bearish";
+      let callPts = 0, putPts = 0;
+      if (trend15m === "Bullish") callPts += 1.5; else putPts += 1.5;
+      if (trend5m === "Bullish") callPts += 1.0; else putPts += 1.0;
+      if (rsi <= 32) callPts += 1.5; else if (rsi >= 68) putPts += 1.5;
+      if ((price - sup) / (res - sup) < 0.2) callPts += 1.0;
+      if ((res - price) / (res - sup) < 0.2) putPts += 1.0;
+
+      let verdict = "Neutral", score = Math.max(callPts, putPts), color = "#94a3b8";
+      if (callPts >= 3.5 && callPts > putPts) { verdict = "STRONG CALL"; color = "#10b981"; score = callPts; }
+      else if (putPts >= 3.5 && putPts > callPts) { verdict = "STRONG PUT"; color = "#ef4444"; score = putPts; }
+      else if (callPts >= 2.5) { verdict = "CALL Bias"; color = "#34d399"; score = callPts; }
+      else if (putPts >= 2.5) { verdict = "PUT Bias"; color = "#f87171"; score = putPts; }
+
+      // Update HUD
+      document.getElementById("h-price").textContent = price.toFixed(3);
+      const sBadge = document.getElementById("h-setup");
+      sBadge.textContent = verdict;
+      sBadge.style.backgroundColor = color;
+      sBadge.style.color = "#fff";
+      document.getElementById("h-score").textContent = Math.min(5, Math.round(score)) + " / 5";
+      document.getElementById("score-fill").style.width = (score / 5 * 100) + "%";
+      document.getElementById("score-fill").style.backgroundColor = color;
+      document.getElementById("h-15m").textContent = trend15m;
+      document.getElementById("h-15m").style.color = trend15m === "Bullish" ? "#10b981" : "#ef4444";
+      document.getElementById("h-5m").textContent = trend5m;
+      document.getElementById("h-5m").style.color = trend5m === "Bullish" ? "#10b981" : "#ef4444";
+      document.getElementById("h-rsi").textContent = rsi.toFixed(1);
+      document.getElementById("h-sr").textContent = `S: ${sup.toFixed(3)} | R: ${res.toFixed(3)}`;
+    }
+
+    setInterval(render, 400);
+  </script>
+</body>
+</html>
