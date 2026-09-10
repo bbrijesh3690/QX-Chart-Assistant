@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.3.6",
-  "description": "Read-only multi-timeframe assistant with container-isolated tab detection and pure WebSocket history.",
+  "version": "1.3.7",
+  "description": "Read-only multi-timeframe assistant with isolated multi-asset candle vaults and payout tab detection.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",

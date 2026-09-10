@@ -28,7 +28,7 @@
     return origFill.apply(this, arguments);
   };
 
-  // 2. WEBSOCKET CANDLE & ASSET PARSER
+  // 2. WEBSOCKET CANDLE PARSER
   function parseCandle(item) {
     if (!item) return null;
     if (typeof item === "object" && !Array.isArray(item)) {
@@ -86,54 +86,26 @@
     return null;
   }
 
-  function parseAssetString(str) {
-    if (typeof str !== "string") return null;
-    const m = str.match(/([A-Za-z0-9]+)[_\/]([A-Za-z0-9]+)(?:_otc|\s*\(OTC\))?/i);
-    if (m && m[1].length === 3 && m[2].length === 3) {
-      return `${m[1].toUpperCase()}/${m[2].toUpperCase()} (OTC)`;
-    }
-    if (str.toLowerCase().includes("_otc")) {
-      const base = str.replace(/_otc/i, "").replace(/_/g, "/").toUpperCase();
-      return `${base} (OTC)`;
-    }
-    return null;
-  }
-
   function deepSearch(data, depth = 0) {
     if (!data || depth > 5) return null;
     if (Array.isArray(data)) {
       const list = extractCandles(data);
-      if (list) return { candles: list, asset: null };
+      if (list) return list;
       for (const it of data) {
         const res = deepSearch(it, depth + 1);
         if (res) return res;
       }
     } else if (typeof data === "object") {
-      let candidateAsset = null;
-      for (const k of ["asset", "symbol", "pair", "instrument", "d"]) {
-        if (data[k]) {
-          const parsed = parseAssetString(data[k]);
-          if (parsed) candidateAsset = parsed;
-        }
-      }
-
       for (const k of ["candles", "history", "data", "quotes", "bars"]) {
         if (data[k]) {
           const res = deepSearch(data[k], depth + 1);
-          if (res) {
-            if (candidateAsset && !res.asset) res.asset = candidateAsset;
-            return res;
-          }
+          if (res) return res;
         }
       }
-
       for (const k of Object.keys(data)) {
         if (typeof data[k] === "object") {
           const res = deepSearch(data[k], depth + 1);
-          if (res) {
-            if (candidateAsset && !res.asset) res.asset = candidateAsset;
-            return res;
-          }
+          if (res) return res;
         }
       }
     }
@@ -152,11 +124,12 @@
       if (start === -1) return;
 
       const parsed = JSON.parse(str.substring(start));
-      const res = deepSearch(parsed);
-      if (res && res.candles && res.candles.length >= 8) {
+      const candles = deepSearch(parsed);
+      if (candles && candles.length >= 8) {
+        const samplePrice = candles[candles.length - 1].close;
         window.postMessage({
           type: "QX_HISTORICAL_CANDLES",
-          payload: { candles: res.candles, asset: res.asset }
+          payload: { candles: candles, samplePrice: samplePrice }
         }, "*");
       }
     } catch (_) {}

@@ -1,45 +1,43 @@
 (function () {
-  const sessionAssetMap = new Map();
-  let lastManualSwitchTime = 0;
+  // Isolated multi-asset vault: key -> { candles1m, currentCandle, livePrice, lastActive }
+  const assetVault = new Map();
 
-  function loadCache() {
+  function loadVault() {
     try {
-      const raw = sessionStorage.getItem("__QX_SESSION_CACHE__");
-      if (raw) JSON.parse(raw).forEach(([k, v]) => sessionAssetMap.set(k, v));
+      const raw = sessionStorage.getItem("__QX_ASSET_VAULT__");
+      if (raw) {
+        const entries = JSON.parse(raw);
+        entries.forEach(([k, v]) => assetVault.set(k, v));
+      }
     } catch (_) {}
   }
 
-  function saveCache() {
+  function saveVault() {
     try {
-      sessionStorage.setItem("__QX_SESSION_CACHE__", JSON.stringify(Array.from(sessionAssetMap.entries())));
+      sessionStorage.setItem("__QX_ASSET_VAULT__", JSON.stringify(Array.from(assetVault.entries())));
     } catch (_) {}
   }
 
-  loadCache();
+  loadVault();
 
-  function getAssetState(name) {
+  function getVaultEntry(name) {
     if (!name || name === "Detecting...") {
-      return { name: "Detecting...", livePrice: null, candles1m: [], currentCandle: null };
+      return { candles1m: [], currentCandle: null, livePrice: null };
     }
-    if (!sessionAssetMap.has(name)) {
-      sessionAssetMap.set(name, {
-        name: name,
-        livePrice: null,
+    if (!assetVault.has(name)) {
+      assetVault.set(name, {
         candles1m: [],
-        currentCandle: null
+        currentCandle: null,
+        livePrice: null
       });
     }
-    return sessionAssetMap.get(name);
+    return assetVault.get(name);
   }
 
-  function parseSingleAsset(str) {
+  function parseAssetString(str) {
     if (!str || typeof str !== "string") return null;
     let s = str.replace(/\b\d{1,3}%\b/g, "").replace(/[\n\r\t]/g, " ").trim();
     if (/^(settings|store|tick|live|demo|trade|chart|deposit|pair information)$/i.test(s)) return null;
-
-    // Reject containers that contain more than one currency pair
-    const allPairs = s.match(/[A-Za-z0-9]+\/[A-Za-z0-9]+/g);
-    if (allPairs && allPairs.length > 1) return null;
 
     const pairMatch = s.match(/([A-Z]{3}\/[A-Z]{3}(?:\s*(?:\(OTC\)|OTC))?)/i);
     if (pairMatch) return pairMatch[1].trim();
@@ -52,79 +50,75 @@
   }
 
   // ==========================================
-  // BULLETPROOF TAB ISOLATOR
+  // BULLETPROOF TAB DETECTION BY PAYOUT BADGE
   // ==========================================
   function detectActiveTab() {
-    // Collect tabs in the upper top bar (top <= 75px, width between 60px and 260px)
+    // Every Quotex tab contains a payout percentage like 85%, 93%, 88%
     const elements = Array.from(document.querySelectorAll("*")).filter(el => {
       if (el.closest("#qx-assistant-panel")) return false;
       const r = el.getBoundingClientRect();
-      return r.top >= 0 && r.top <= 75 && r.width >= 60 && r.width <= 260 && r.height >= 20 && r.height <= 60;
+      if (r.top < 0 || r.top > 80 || r.width < 50 || r.width > 300) return false;
+      const text = el.innerText || el.textContent || "";
+      return /\b\d{1,3}%\b/.test(text);
     });
 
-    let bestTab = null;
-    let highestSvgCount = 0;
+    let bestAsset = null;
+    let maxScore = -1;
 
     for (const el of elements) {
       const text = el.innerText || el.textContent || "";
-      const asset = parseSingleAsset(text);
-      if (!asset) continue; // Skip wrappers or items without exact single asset
+      const asset = parseAssetString(text);
+      if (!asset) continue;
 
       const svgs = el.querySelectorAll("svg");
-      // In Quotex, the active tab contains 3 SVGs (flag, chevron, close cross). Inactive tabs contain only 1.
-      if (svgs.length > highestSvgCount) {
-        highestSvgCount = svgs.length;
-        bestTab = asset;
+      const hasClose = el.querySelector("[class*='close'], svg path[d*='M']");
+      const isActiveClass = /(active|selected|current)/i.test(el.className || "");
+
+      let score = svgs.length;
+      if (hasClose) score += 3;
+      if (isActiveClass) score += 5;
+
+      if (score > maxScore) {
+        maxScore = score;
+        bestAsset = asset;
       }
     }
 
-    // Only accept if it scored more SVGs than an inactive tab (>= 2)
-    return highestSvgCount >= 2 ? bestTab : null;
+    return maxScore >= 1 ? bestAsset : null;
   }
 
   let activeAsset = detectActiveTab() || "Detecting...";
-  let state = getAssetState(activeAsset);
+  let state = getVaultEntry(activeAsset);
 
   function switchAsset(newName) {
     if (!newName || newName === activeAsset || newName === "Detecting...") return;
-    console.log("[QX-Assistant] Confirmed active asset:", newName);
     activeAsset = newName;
-    state = getAssetState(activeAsset);
-
-    // Wipe any cross-asset candle contamination
-    if (state.livePrice !== null && state.candles1m.length > 0) {
-      const last = state.candles1m[state.candles1m.length - 1];
-      if (Math.abs(last.close - state.livePrice) / state.livePrice > 0.25) {
-        state.candles1m = [];
-        state.currentCandle = null;
-      }
-    }
-
-    saveCache();
+    state = getVaultEntry(activeAsset);
+    saveVault();
     updateUI();
   }
 
-  // Instant capture on mouse click
+  // Capture clicks directly on tabs
   document.addEventListener("pointerdown", (e) => {
     if (e.target.closest("#qx-assistant-panel")) return;
     let el = e.target;
     for (let i = 0; i < 5 && el && el !== document.body; i++) {
       const r = el.getBoundingClientRect();
-      if (r.top >= 0 && r.top <= 75 && r.width <= 260) {
-        const asset = parseSingleAsset(el.innerText || el.textContent || "");
-        if (asset) {
-          lastManualSwitchTime = Date.now();
-          switchAsset(asset);
-          break;
+      if (r.top >= 0 && r.top <= 80 && r.width <= 300) {
+        const text = el.innerText || el.textContent || "";
+        if (/\b\d{1,3}%\b/.test(text)) {
+          const asset = parseAssetString(text);
+          if (asset) {
+            switchAsset(asset);
+            break;
+          }
         }
       }
       el = el.parentElement;
     }
   }, true);
 
-  // Background sync (waits 800ms after manual click to avoid race conditions)
   setInterval(() => {
-    if (Date.now() - lastManualSwitchTime < 800) return;
     const detected = detectActiveTab();
     if (detected && detected !== activeAsset) {
       switchAsset(detected);
@@ -132,20 +126,22 @@
   }, 400);
 
   // ==========================================
-  // PRICE & CANDLE INGESTION
+  // DYNAMIC PRICE & CANDLE INGESTION
   // ==========================================
   function ingestFastTick(price, time) {
+    if (activeAsset === "Detecting...") {
+      const detected = detectActiveTab();
+      if (detected) switchAsset(detected);
+      else return;
+    }
+
+    // Ignore ticks that deviate wildly from the current asset's price range during tab transitions
+    if (state.livePrice !== null && Math.abs(price - state.livePrice) / state.livePrice > 0.4) {
+      return;
+    }
+
     state.livePrice = price;
     const minFloor = Math.floor(time / 60000) * 60000;
-
-    // Purge contaminated candles if live scale suddenly shifts by > 25%
-    if (state.candles1m.length > 0) {
-      const last = state.candles1m[state.candles1m.length - 1];
-      if (Math.abs(last.close - price) / price > 0.25) {
-        state.candles1m = [];
-        state.currentCandle = null;
-      }
-    }
 
     if (!state.currentCandle) {
       state.currentCandle = { time: minFloor, open: price, high: price, low: price, close: price };
@@ -157,7 +153,7 @@
       state.candles1m.push(Object.assign({}, state.currentCandle));
       if (state.candles1m.length > 240) state.candles1m.shift();
       state.currentCandle = { time: minFloor, open: price, high: price, low: price, close: price };
-      saveCache();
+      saveVault();
     }
 
     const priceEl = document.getElementById("qx-ui-price");
@@ -165,26 +161,34 @@
     updateAnalysis();
   }
 
-  function ingestHistory(candles, packetAsset) {
+  function ingestHistory(candles, samplePrice) {
     if (!candles || candles.length === 0) return;
 
-    if (packetAsset && packetAsset !== activeAsset && activeAsset === "Detecting...") {
-      switchAsset(packetAsset);
+    // Route history to whichever asset in the vault matches this price magnitude
+    let targetAsset = activeAsset;
+    if (state.livePrice !== null && Math.abs(samplePrice - state.livePrice) / state.livePrice > 0.3) {
+      targetAsset = null;
+      for (const [name, data] of assetVault.entries()) {
+        if (data.livePrice !== null && Math.abs(samplePrice - data.livePrice) / data.livePrice <= 0.3) {
+          targetAsset = name;
+          break;
+        }
+      }
     }
 
-    // Verify candles match live price magnitude within 25%
-    if (state.livePrice !== null) {
-      const sample = candles[candles.length - 1].close;
-      if (Math.abs(sample - state.livePrice) / state.livePrice > 0.25) return;
-    }
+    if (!targetAsset || targetAsset === "Detecting...") return;
 
+    const targetState = getVaultEntry(targetAsset);
     const map = new Map();
-    state.candles1m.forEach(c => map.set(c.time, c));
+    targetState.candles1m.forEach(c => map.set(c.time, c));
     candles.forEach(c => map.set(c.time, c));
-    state.candles1m = Array.from(map.values()).sort((a, b) => a.time - b.time);
-    if (state.candles1m.length > 240) state.candles1m = state.candles1m.slice(-240);
-    saveCache();
-    updateUI();
+    targetState.candles1m = Array.from(map.values()).sort((a, b) => a.time - b.time);
+    if (targetState.candles1m.length > 240) targetState.candles1m = targetState.candles1m.slice(-240);
+
+    saveVault();
+    if (targetAsset === activeAsset) {
+      updateUI();
+    }
   }
 
   function getAggregate(candles, current, periodMin) {
@@ -247,7 +251,7 @@
       <div id="qx-panel-header">
         <div id="qx-panel-title">
           <span class="qx-badge">READ ONLY</span>
-          <strong>QX Assistant</strong> <small>v1.3.6</small>
+          <strong>QX Assistant</strong> <small>v1.3.7</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-reset-pos" title="Reset Position">[R]</button>
@@ -407,7 +411,7 @@
     if (e.data?.type === "QX_FAST_PRICE_TICK") {
       ingestFastTick(e.data.payload.price, e.data.payload.timestamp);
     } else if (e.data?.type === "QX_HISTORICAL_CANDLES") {
-      ingestHistory(e.data.payload.candles, e.data.payload.asset);
+      ingestHistory(e.data.payload.candles, e.data.payload.samplePrice);
     }
   });
 })();
