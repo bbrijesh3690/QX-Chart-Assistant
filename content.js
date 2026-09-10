@@ -19,7 +19,7 @@
 
   function getVaultEntry(name) {
     if (!name || name === "Detecting...") {
-      return { candles1m: [], currentCandle: null, livePrice: null, rawPrice: null, decimals: 5 };
+      return { candles1m: [], currentCandle: null, livePrice: null, rawPrice: null, decimals: 2 };
     }
     if (!assetVault.has(name)) {
       assetVault.set(name, {
@@ -27,66 +27,79 @@
         currentCandle: null,
         livePrice: null,
         rawPrice: null,
-        decimals: 5
+        decimals: 2
       });
     }
     return assetVault.get(name);
   }
 
-  function cleanAsset(str) {
-    if (!str || typeof str !== "string") return null;
-    let s = str.replace(/\b\d{1,3}%\b/g, "").replace(/[\n\r\t]/g, " ").trim();
-    if (/^(settings|store|tick|live|demo|trade|chart|deposit|pair information)$/i.test(s)) return null;
+  // UNIVERSAL CLEANER: Strips payout %, UI buttons, and spaces
+  function cleanAssetName(raw) {
+    if (!raw || typeof raw !== "string") return null;
+    let s = raw.replace(/\b\d{1,3}%\b/g, "").replace(/[\n\r\t]/g, " ").trim();
+    if (/^(settings|store|tick|live|demo|trade|chart|deposit|pair information|beginning of trade)$/i.test(s)) return null;
+    s = s.replace(/PAIR INFORMATION/gi, "").replace(/BEGINNING OF TRADE/gi, "").trim();
+    s = s.replace(/\s+/g, " ");
 
-    const pairMatch = s.match(/([A-Z]{3}\/[A-Z]{3}(?:\s*(?:\(OTC\)|OTC))?)/i);
-    if (pairMatch) return pairMatch[1].trim();
-
-    const otcMatch = s.match(/([A-Za-z0-9\.\-\s]+(?:\(OTC\)|OTC))/i);
-    if (otcMatch && otcMatch[1].trim().length >= 3 && otcMatch[1].trim().length <= 25) {
-      return otcMatch[1].trim();
+    if (s.length >= 3 && s.length <= 30 && !/^\d+$/.test(s)) {
+      return s;
     }
     return null;
   }
 
-  function detectActiveTab() {
-    const maxY = Math.max(120, window.innerHeight * 0.15);
-    const elements = Array.from(document.querySelectorAll("*")).filter(el => {
-      if (el.closest("#qx-assistant-panel")) return false;
-      const r = el.getBoundingClientRect();
-      if (r.top < 0 || r.top > maxY || r.width < 40 || r.width > 350) return false;
-      const text = el.innerText || el.textContent || "";
-      return /\(OTC\)|[A-Z]{3}\/[A-Z]{3}/i.test(text);
-    });
-
-    let bestAsset = null;
-    let maxScore = -1;
-
-    for (const el of elements) {
-      const text = el.innerText || el.textContent || "";
-      const asset = cleanAsset(text);
-      if (!asset) continue;
-
-      const svgs = el.querySelectorAll("svg");
-      const hasClose = el.querySelector("[class*='close'], svg path[d*='M']");
-      const isActive = /(active|selected|current)/i.test(el.className || "");
-
-      let score = svgs.length;
-      if (hasClose) score += 3;
-      if (isActive) score += 4;
-
-      if (score > maxScore) {
-        maxScore = score;
-        bestAsset = asset;
+  // TARGETS ACTIVE TAB IN TOP STRIP
+  function getActiveTabName() {
+    // 1. Target tab containing the close cross (x)
+    const closeButtons = document.querySelectorAll(
+      "button[class*='close'], svg[class*='close'], [class*='tab-close'], [class*='tab__close'], [aria-label*='close']"
+    );
+    for (const btn of closeButtons) {
+      if (btn.closest("#qx-assistant-panel")) continue;
+      const tab = btn.closest("[class*='tab'], [class*='item'], div");
+      if (tab && tab.getBoundingClientRect().top <= 110) {
+        const clone = tab.cloneNode(true);
+        clone.querySelectorAll("button, svg, [class*='close']").forEach(n => n.remove());
+        const name = cleanAssetName(clone.textContent || clone.innerText);
+        if (name) return name;
       }
     }
-    return maxScore >= 1 ? bestAsset : null;
+
+    // 2. Target tab with dropdown chevron
+    const dropdowns = document.querySelectorAll("[class*='dropdown'], [class*='chevron'], [class*='arrow']");
+    for (const d of dropdowns) {
+      if (d.closest("#qx-assistant-panel")) continue;
+      const tab = d.closest("[class*='tab'], [class*='item'], div");
+      if (tab && tab.getBoundingClientRect().top <= 110) {
+        const clone = tab.cloneNode(true);
+        clone.querySelectorAll("button, svg").forEach(n => n.remove());
+        const name = cleanAssetName(clone.textContent || clone.innerText);
+        if (name) return name;
+      }
+    }
+
+    // 3. Fallback to active class
+    const activeEls = document.querySelectorAll(
+      ".tab--active, .tabs__item--active, [class*='tab'][class*='active'], [class*='item'][class*='active'], [aria-selected='true']"
+    );
+    for (const el of activeEls) {
+      if (el.closest("#qx-assistant-panel")) continue;
+      if (el.getBoundingClientRect().top <= 110) {
+        const clone = el.cloneNode(true);
+        clone.querySelectorAll("button, svg, [class*='close']").forEach(n => n.remove());
+        const name = cleanAssetName(clone.textContent || clone.innerText);
+        if (name) return name;
+      }
+    }
+
+    return null;
   }
 
-  let activeAsset = detectActiveTab() || "Detecting...";
+  let activeAsset = getActiveTabName() || "Detecting...";
   let state = getVaultEntry(activeAsset);
 
   function switchAsset(newName) {
     if (!newName || newName === activeAsset || newName === "Detecting...") return;
+    console.log("[QX-Assistant] Switch active asset to:", newName);
     activeAsset = newName;
     state = getVaultEntry(activeAsset);
 
@@ -99,15 +112,17 @@
     updateUI();
   }
 
+  // Pointerdown interceptor on tab row
   document.addEventListener("pointerdown", (e) => {
     if (e.target.closest("#qx-assistant-panel")) return;
     let el = e.target;
     for (let i = 0; i < 5 && el && el !== document.body; i++) {
-      const r = el.getBoundingClientRect();
-      if (r.top >= 0 && r.top <= 140) {
-        const asset = cleanAsset(el.innerText || el.textContent || "");
-        if (asset) {
-          switchAsset(asset);
+      if (el.getBoundingClientRect().top <= 110) {
+        const clone = el.cloneNode(true);
+        clone.querySelectorAll("button, svg").forEach(n => n.remove());
+        const name = cleanAssetName(clone.textContent || clone.innerText);
+        if (name) {
+          switchAsset(name);
           break;
         }
       }
@@ -116,26 +131,35 @@
   }, true);
 
   setInterval(() => {
-    const detected = detectActiveTab();
-    if (detected && detected !== activeAsset) {
-      switchAsset(detected);
+    const current = getActiveTabName();
+    if (current && current !== activeAsset) {
+      switchAsset(current);
     }
-  }, 400);
+  }, 350);
 
   // ==========================================
-  // FAST PRICE & NATIVE PRECISION SYNC
+  // PRICE INGESTION & OUTLIER GUARD
   // ==========================================
   function ingestFastTick(price, rawText, decimals, time) {
     if (activeAsset === "Detecting...") {
-      const found = detectActiveTab();
+      const found = getActiveTabName();
       if (found) switchAsset(found);
     }
 
     state.livePrice = price;
     state.rawPrice = rawText;
-    if (decimals) state.decimals = decimals;
+    if (decimals !== undefined) state.decimals = decimals;
 
     const minFloor = Math.floor(time / 60000) * 60000;
+
+    // Purge contaminated candles from a previous price scale
+    if (state.candles1m.length > 0) {
+      const last = state.candles1m[state.candles1m.length - 1];
+      if (Math.abs(last.close - price) / price > 0.45) {
+        state.candles1m = [];
+        state.currentCandle = null;
+      }
+    }
 
     if (!state.currentCandle) {
       state.currentCandle = { time: minFloor, open: price, high: price, low: price, close: price };
@@ -160,7 +184,7 @@
 
     if (activeAsset === "Detecting...") {
       pendingCandles = candles;
-      const found = detectActiveTab();
+      const found = getActiveTabName();
       if (found) switchAsset(found);
       return;
     }
@@ -251,7 +275,7 @@
       <div id="qx-panel-header">
         <div id="qx-panel-title">
           <span class="qx-badge">READ ONLY</span>
-          <strong>QX Assistant</strong> <small>v1.3.9</small>
+          <strong>QX Assistant</strong> <small>v1.4.1</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-refresh" title="Synchronize Tabs & History">[Sync]</button>
@@ -346,7 +370,7 @@
     const btnRefresh = document.getElementById("qx-btn-refresh");
     btnRefresh.addEventListener("click", () => {
       btnRefresh.textContent = "[...]";
-      const found = detectActiveTab();
+      const found = getActiveTabName();
       if (found) switchAsset(found);
       window.postMessage({ type: "QX_REQ_REPLAY" }, "*");
       setTimeout(() => {
@@ -384,21 +408,28 @@
   }, 400);
 
   function updateAnalysis() {
-    const dec = state.decimals || 3;
-    const m1List = [...state.candles1m];
-    if (state.currentCandle) m1List.push(state.currentCandle);
-    const m5List = getAggregate(state.candles1m, state.currentCandle, 5);
-    const m15List = getAggregate(state.candles1m, state.currentCandle, 15);
+    const dec = state.decimals !== undefined ? state.decimals : 2;
+
+    // SANITY FILTER: Candles must be within 30% of current live price
+    let cleanCandles = [...state.candles1m];
+    if (state.livePrice !== null && cleanCandles.length > 0) {
+      cleanCandles = cleanCandles.filter(c => Math.abs(c.close - state.livePrice) / state.livePrice < 0.3);
+    }
+
+    if (state.currentCandle) cleanCandles.push(state.currentCandle);
+
+    const m5List = getAggregate(cleanCandles, null, 5);
+    const m15List = getAggregate(cleanCandles, null, 15);
 
     const cnt1m = document.getElementById("qx-cnt-1m");
     const cnt5m = document.getElementById("qx-cnt-5m");
     const cnt15m = document.getElementById("qx-cnt-15m");
-    if (cnt1m) cnt1m.textContent = m1List.length;
+    if (cnt1m) cnt1m.textContent = cleanCandles.length;
     if (cnt5m) cnt5m.textContent = m5List.length;
     if (cnt15m) cnt15m.textContent = m15List.length;
 
-    const rsi = calcRSI(m1List, 14);
-    const sr = calcSR(m1List);
+    const rsi = calcRSI(cleanCandles, 14);
+    const sr = calcSR(cleanCandles);
 
     const rsiEl = document.getElementById("qx-ui-rsi");
     if (rsiEl) rsiEl.textContent = rsi !== null ? rsi.toFixed(1) : "--";
@@ -418,7 +449,7 @@
 
     const priceEl = document.getElementById("qx-ui-price");
     if (priceEl && (state.rawPrice || state.livePrice !== null)) {
-      priceEl.textContent = state.rawPrice || state.livePrice.toFixed(state.decimals || 5);
+      priceEl.textContent = state.rawPrice || state.livePrice.toFixed(state.decimals !== undefined ? state.decimals : 2);
     }
     updateAnalysis();
   }

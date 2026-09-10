@@ -6,12 +6,13 @@
   let lastPrice = null;
   let lastTime = 0;
 
-  // 1. FAST 60FPS PRICE PASS-THROUGH WITH NATIVE PRECISION
+  // 1. FAST 60FPS PRICE PASS-THROUGH (Supports 10610.0, 249.56, 0.19825, 88.789)
   const origFill = CanvasRenderingContext2D.prototype.fillText;
   CanvasRenderingContext2D.prototype.fillText = function (text, x, y, maxW) {
     if (typeof text === "string") {
       const clean = text.trim();
-      if (/^\d{1,6}\.\d{2,6}$/.test(clean)) {
+      // Accepts 1 to 6 decimal digits after the dot (matches 10610.0, 88.789, 0.19825)
+      if (/^\d{1,7}\.\d{1,6}$/.test(clean) && !clean.includes(":") && !clean.includes("%")) {
         const val = parseFloat(clean);
         if (!isNaN(val) && val > 0) {
           const now = Date.now();

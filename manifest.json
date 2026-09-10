@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.3.9",
-  "description": "Read-only multi-timeframe assistant with dynamic decimal precision and instant sync.",
+  "version": "1.4.1",
+  "description": "Read-only multi-timeframe assistant with universal asset support and flexible decimal matching.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",
