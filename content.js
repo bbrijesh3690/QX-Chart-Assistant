@@ -1,12 +1,11 @@
 (function () {
-  // Purge all stale legacy cache entries from storage
   try {
     sessionStorage.removeItem("__QX_SESSION_CACHE__");
     sessionStorage.removeItem("__QX_ASSET_VAULT__");
     sessionStorage.removeItem("__QX_ASSET_VAULT_V3__");
   } catch (_) {}
 
-  const VAULT_KEY = "__QX_ASSET_VAULT_V4__";
+  const VAULT_KEY = "__QX_ASSET_VAULT_V5__";
   const assetVault = new Map();
   const globalHistoryPool = [];
 
@@ -41,11 +40,10 @@
     return assetVault.get(name);
   }
 
-  // ROBUST SANITIZER WITH CONTAINER REJECTION
+  // PRESERVES EXACT PAIR FORMAT (Leaves non-OTC pairs clean!)
   function formatCleanName(raw) {
     if (!raw || typeof raw !== "string") return null;
 
-    // REJECT MULTI-TAB CONTAINERS
     const p = raw.match(/\d{1,3}\s*%/g);
     if (p && p.length > 1) return null;
     const pairs = raw.match(/[A-Z]{3}\/[A-Z]{3}/gi);
@@ -54,16 +52,17 @@
     let s = raw.replace(/\d{1,3}\s*%/g, "").trim();
     s = s.replace(/PAIR INFORMATION/gi, "").replace(/BEGINNING OF TRADE/gi, "").trim();
     s = s.replace(/[\r\n\t]+/g, " ");
-    s = s.replace(/[\.…]+$/, "").trim(); // Strips "USD/PKR..." truncation
+    s = s.replace(/[\.…]+$/, "").trim();
     s = s.replace(/\s+/g, " ");
 
     if (!s || s.length < 2 || s.includes("%") || /^\d+$/.test(s)) return null;
     if (/^(close|tab|payout|pin|active|favorite)$/i.test(s)) return null;
 
-    // Currency Pairs (e.g. USD/PKR -> USD/PKR (OTC))
+    // Currency Pairs: only add (OTC) if the raw string actually contained OTC!
     const pairMatch = s.match(/([A-Z]{3}\/[A-Z]{3})/i);
     if (pairMatch) {
-      return `${pairMatch[1].toUpperCase()} (OTC)`;
+      const isOtc = /OTC/i.test(s);
+      return isOtc ? `${pairMatch[1].toUpperCase()} (OTC)` : pairMatch[1].toUpperCase();
     }
 
     // Indices, Crypto & Commodities (e.g. FTSE 100, Bitcoin Cash (OTC), Gold)
@@ -74,7 +73,7 @@
     return null;
   }
 
-  // ACTIVE-STATE DETERMINISTIC TAB FINDER (Never uses raw SVG counts)
+  // ACTIVE-STATE TAB DETECTOR
   function getActiveTabFromDOM() {
     const candidateTabs = Array.from(document.querySelectorAll("*")).filter(el => {
       if (el.closest("#qx-assistant-panel")) return false;
@@ -82,7 +81,7 @@
       if (r.top < 0 || r.top > 75 || r.height < 20 || r.height > 60 || r.width < 45 || r.width > 300) return false;
       const text = el.innerText || el.textContent || "";
       const p = text.match(/\d{1,3}\s*%/g);
-      return p && p.length === 1; // Strict: Exactly one tab element
+      return p && p.length === 1;
     });
 
     if (candidateTabs.length === 0) return null;
@@ -94,22 +93,19 @@
       let score = 0;
       const cls = (tab.className || "") + " " + (tab.getAttribute("aria-selected") || "");
 
-      // 1. Check active class
       if (/(tab--active|tabs__item--active|is-active|\bactive\b|selected)/i.test(cls)) {
         score += 50;
       }
 
-      // 2. Check jet black active background color
       try {
         const bg = window.getComputedStyle(tab).backgroundColor;
         const m = bg.match(/\d+/g);
         if (m && m.length >= 3) {
           const lum = 0.299 * m[0] + 0.587 * m[1] + 0.114 * m[2];
-          if (lum < 22) score += 40; // Active tab in Quotex is black (lum < 20)
+          if (lum < 22) score += 40;
         }
       } catch (_) {}
 
-      // 3. Check for close button or chevron dropdown (only present on active tab)
       const hasAction = tab.querySelector("button, [class*='close'], [class*='chevron'], [class*='arrow'], [class*='dropdown'], [class*='pin']");
       if (hasAction) score += 30;
 
@@ -131,7 +127,6 @@
   let activeAsset = getActiveTabFromDOM() || "Detecting...";
   let state = getVaultEntry(activeAsset);
 
-  // RETROACTIVE HISTORY HYDRATION
   function tryHydrateCandles() {
     if (state.candles1m.length >= 20 || state.livePrice === null) return;
     for (const pkt of globalHistoryPool) {
@@ -146,7 +141,6 @@
 
   function switchAsset(newName) {
     if (!newName || newName === activeAsset || newName === "Detecting...") return;
-    console.log("[QX-Assistant] Active asset switched to:", newName);
     activeAsset = newName;
     state = getVaultEntry(activeAsset);
 
@@ -155,7 +149,6 @@
     updateUI();
   }
 
-  // 1. POINTERDOWN INTERCEPTOR (Only checks elements within tab width)
   document.addEventListener("pointerdown", (e) => {
     if (e.target.closest("#qx-assistant-panel")) return;
     let el = e.target;
@@ -173,7 +166,6 @@
     }
   }, true);
 
-  // 2. DOM MUTATION OBSERVER
   let observerDebounce = null;
   const observer = new MutationObserver(() => {
     clearTimeout(observerDebounce);
@@ -218,7 +210,6 @@
 
     const minFloor = Math.floor(time / 60000) * 60000;
 
-    // Purge candles if an incompatible price scale from another asset slipped in
     if (state.candles1m.length > 0) {
       const last = state.candles1m[state.candles1m.length - 1];
       if (Math.abs(last.close - price) / price > 0.40) {
@@ -311,9 +302,57 @@
     const h = candles.map(c => c.high);
     const l = candles.map(c => c.low);
     return {
-      s: Math.min(...l.slice(-15)),
-      r: Math.max(...h.slice(-15))
+      s: Math.min(...l.slice(-20)),
+      r: Math.max(...h.slice(-20))
     };
+  }
+
+  // ==========================================
+  // DYNAMIC CONFLUENCE & SETUP ENGINE
+  // ==========================================
+  function evaluateConfluence(m15Trend, m5Trend, rsi, price, sr, latestCandle) {
+    let callScore = 0;
+    let putScore = 0;
+
+    // 1. 15m Higher-Timeframe Trend
+    if (m15Trend === "Bullish") callScore += 1.5;
+    else if (m15Trend === "Bearish") putScore += 1.5;
+
+    // 2. 5m Intermediate Trend
+    if (m5Trend === "Bullish") callScore += 1.0;
+    else if (m5Trend === "Bearish") putScore += 1.0;
+
+    // 3. 1m RSI Conditions
+    if (rsi !== null) {
+      if (rsi <= 32) callScore += 1.5; // Oversold -> Buy bounce
+      else if (rsi >= 68) putScore += 1.5; // Overbought -> Sell drop
+      else if (rsi > 50 && m5Trend === "Bullish") callScore += 0.5;
+      else if (rsi < 50 && m5Trend === "Bearish") putScore += 0.5;
+    }
+
+    // 4. Support / Resistance Proximity
+    if (sr.s !== null && sr.r !== null && price !== null) {
+      const range = sr.r - sr.s;
+      if (range > 0) {
+        const distToSupport = (price - sr.s) / range;
+        const distToResistance = (sr.r - price) / range;
+        if (distToSupport < 0.15) callScore += 1.0; // Near Support
+        if (distToResistance < 0.15) putScore += 1.0; // Near Resistance
+      }
+    }
+
+    // Calculate final verdict
+    if (callScore >= 3.5 && callScore > putScore) {
+      return { setup: "STRONG CALL", score: Math.min(5, Math.round(callScore)), color: "#10b981" };
+    } else if (putScore >= 3.5 && putScore > callScore) {
+      return { setup: "STRONG PUT", score: Math.min(5, Math.round(putScore)), color: "#ef4444" };
+    } else if (callScore >= 2.5 && callScore > putScore) {
+      return { setup: "CALL Bias", score: Math.round(callScore), color: "#34d399" };
+    } else if (putScore >= 2.5 && putScore > callScore) {
+      return { setup: "PUT Bias", score: Math.round(putScore), color: "#f87171" };
+    } else {
+      return { setup: "Neutral", score: Math.max(callScore, putScore).toFixed(0), color: "#94a3b8" };
+    }
   }
 
   function mountUI() {
@@ -326,7 +365,7 @@
       <div id="qx-panel-header">
         <div id="qx-panel-title">
           <span class="qx-badge">READ ONLY</span>
-          <strong>QX Assistant</strong> <small>v1.4.6</small>
+          <strong>QX Assistant</strong> <small>v1.4.7</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-refresh" title="Synchronize Tabs & History">[Sync]</button>
@@ -353,13 +392,14 @@
             <strong id="qx-ui-setup" class="qx-accent">Scanning...</strong>
           </div>
           <div class="qx-row">
-            <span class="qx-label">Score:</span>
+            <span class="qx-label">Confluence Score:</span>
             <span id="qx-ui-score" class="qx-pill">0 / 5</span>
           </div>
           <div class="qx-tf-box">
-            <div><strong>15m:</strong> <span id="qx-ui-15m">Neutral</span></div>
-            <div><strong>5m:</strong> <span id="qx-ui-5m">Neutral</span></div>
-            <div><strong>1m RSI:</strong> <span id="qx-ui-rsi">--</span></div>
+            <div class="qx-row-sm"><span>15m Trend:</span> <strong id="qx-ui-15m">Neutral</strong></div>
+            <div class="qx-row-sm"><span>5m Trend:</span> <strong id="qx-ui-5m">Neutral</strong></div>
+            <div class="qx-row-sm"><span>1m RSI (14):</span> <strong id="qx-ui-rsi">--</strong></div>
+            <div class="qx-row-sm"><span>Key Levels:</span> <span id="qx-ui-sr" class="qx-mono">--</span></div>
           </div>
         </div>
 
@@ -482,16 +522,61 @@
     const rsi = calcRSI(cleanCandles, 14);
     const sr = calcSR(cleanCandles);
 
-    const rsiEl = document.getElementById("qx-ui-rsi");
-    if (rsiEl) rsiEl.textContent = rsi !== null ? rsi.toFixed(1) : "--";
+    // Accurate 15m trend (checks close vs open of latest 15m candle)
+    let trend15m = "Neutral";
+    if (m15List.length >= 1) {
+      const last15 = m15List[m15List.length - 1];
+      trend15m = last15.close >= last15.open ? "Bullish" : "Bearish";
+    }
+
+    // Accurate 5m trend (checks current vs previous 5m close)
+    let trend5m = "Neutral";
+    if (m5List.length >= 2) {
+      const cur5 = m5List[m5List.length - 1];
+      const prev5 = m5List[m5List.length - 2];
+      trend5m = cur5.close >= prev5.close ? "Bullish" : "Bearish";
+    }
+
+    // Compute live confluence verdict & score
+    const verdict = evaluateConfluence(trend15m, trend5m, rsi, state.livePrice, sr, state.currentCandle);
+
+    const setupEl = document.getElementById("qx-ui-setup");
+    if (setupEl) {
+      setupEl.textContent = verdict.setup;
+      setupEl.style.color = verdict.color;
+    }
+
+    const scoreEl = document.getElementById("qx-ui-score");
+    if (scoreEl) {
+      scoreEl.textContent = `${verdict.score} / 5`;
+      scoreEl.style.background = verdict.score >= 3 ? (verdict.setup.includes("CALL") ? "#065f46" : "#7f1d1d") : "#2d3748";
+      scoreEl.style.color = verdict.score >= 3 ? "#ffffff" : "#cbd5e1";
+    }
 
     const m15El = document.getElementById("qx-ui-15m");
     if (m15El) {
-      m15El.textContent = sr.s && sr.r ? `S: ${sr.s.toFixed(dec)} | R: ${sr.r.toFixed(dec)}` : "Accumulating";
+      m15El.textContent = trend15m;
+      m15El.style.color = trend15m === "Bullish" ? "#10b981" : (trend15m === "Bearish" ? "#ef4444" : "#94a3b8");
     }
 
     const m5El = document.getElementById("qx-ui-5m");
-    if (m5El) m5El.textContent = m5List.length >= 2 ? (m5List[m5List.length - 1].close > m5List[0].close ? "Bullish" : "Bearish") : "Neutral";
+    if (m5El) {
+      m5El.textContent = trend5m;
+      m5El.style.color = trend5m === "Bullish" ? "#10b981" : (trend5m === "Bearish" ? "#ef4444" : "#94a3b8");
+    }
+
+    const rsiEl = document.getElementById("qx-ui-rsi");
+    if (rsiEl) {
+      rsiEl.textContent = rsi !== null ? rsi.toFixed(1) : "--";
+      if (rsi !== null) {
+        rsiEl.style.color = rsi <= 30 ? "#10b981" : (rsi >= 70 ? "#ef4444" : "#e2e8f0");
+      }
+    }
+
+    const srEl = document.getElementById("qx-ui-sr");
+    if (srEl) {
+      srEl.textContent = sr.s && sr.r ? `S: ${sr.s.toFixed(dec)} | R: ${sr.r.toFixed(dec)}` : "Accumulating";
+    }
   }
 
   function updateUI() {

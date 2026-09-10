@@ -2,7 +2,7 @@
   position: fixed;
   top: 70px;
   right: 20px;
-  width: 280px;
+  width: 285px;
   background: #151821;
   color: #e2e8f0;
   border: 1px solid #2d3748;
@@ -74,6 +74,13 @@
   align-items: center;
   margin-bottom: 4px;
 }
+.qx-row-sm {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 3px;
+  font-size: 11px;
+}
 .qx-label {
   color: #94a3b8;
 }
@@ -85,13 +92,14 @@
 }
 .qx-accent {
   color: #38bdf8;
-  font-weight: 600;
+  font-weight: 700;
 }
 .qx-pill {
   background: #2d3748;
   color: #cbd5e1;
-  font-size: 9px;
-  padding: 1px 5px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
   border-radius: 10px;
 }
 .qx-tf-box {
@@ -100,7 +108,13 @@
   border-radius: 4px;
   padding: 6px;
   font-size: 11px;
-  line-height: 1.5;
+  line-height: 1.4;
+  margin-top: 5px;
+}
+.qx-mono {
+  font-family: monospace;
+  font-size: 10px;
+  color: #94a3b8;
 }
 .qx-grid-3 {
   display: grid;

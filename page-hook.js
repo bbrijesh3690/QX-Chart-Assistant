@@ -6,7 +6,7 @@
   let lastPrice = null;
   let lastTime = 0;
 
-  // 1. FAST 60FPS PRICE PASS-THROUGH
+  // 1. FAST 60FPS CANVAS PRICE PASS-THROUGH
   const origFill = CanvasRenderingContext2D.prototype.fillText;
   CanvasRenderingContext2D.prototype.fillText = function (text, x, y, maxW) {
     if (typeof text === "string") {
