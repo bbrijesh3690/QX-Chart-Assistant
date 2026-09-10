@@ -4,9 +4,7 @@
   function loadCache() {
     try {
       const raw = sessionStorage.getItem("__QX_SESSION_CACHE__");
-      if (raw) {
-        JSON.parse(raw).forEach(([k, v]) => sessionAssetMap.set(k, v));
-      }
+      if (raw) JSON.parse(raw).forEach(([k, v]) => sessionAssetMap.set(k, v));
     } catch (_) {}
   }
 
@@ -31,94 +29,90 @@
   }
 
   // ==========================================
-  // PRECISE ACTIVE TAB DETECTION (BASED ON CLOSE 'X' & CHEVRON)
+  // UNIVERSAL ASSET NORMALIZER & DETECTOR
   // ==========================================
-  function parseCleanName(str) {
-    if (!str) return null;
-    let clean = str.replace(/[\n\r\t]/g, " ").replace(/\d+%/g, "").trim();
-    const m = clean.match(/([A-Za-z0-9\/\-\s]+(\(OTC\)|OTC)?)/i);
-    if (m && m[0].trim().length >= 3) {
-      const res = m[0].trim();
-      if (!res.includes("PAIR") && !res.includes("INFORMATION")) return res;
+  function parseAssetName(str) {
+    if (!str || typeof str !== "string") return null;
+    let clean = str.replace(/\b\d{1,3}%\b/g, "").replace(/[\n\r\t]/g, " ").trim();
+    clean = clean.replace(/PAIR INFORMATION/gi, "").replace(/BEGINNING OF TRADE/gi, "").trim();
+
+    // 1. Currency pairs: USD/BRL (OTC), USD/BDT, EUR/USD OTC
+    const pairMatch = clean.match(/([A-Z]{3}\/[A-Z]{3}(?:\s*(?:\(OTC\)|OTC))?)/i);
+    if (pairMatch) return pairMatch[1].trim();
+
+    // 2. Cryptos & Commodities with OTC: Cosmos (OTC), Bitcoin (OTC), Gold (OTC)
+    const otcMatch = clean.match(/([A-Za-z0-9\.\-\s]+(?:\(OTC\)|OTC))/i);
+    if (otcMatch) {
+      const name = otcMatch[1].trim();
+      if (name.length >= 3 && name.length <= 25 && !/^(LIVE|DEMO|TRADE|CHART|DEPOSIT)$/i.test(name)) {
+        return name;
+      }
     }
+
     return null;
   }
 
-  function detectActiveAsset() {
-    // 1. Only the active Quotex tab has the close button (x)
-    const closeButtons = document.querySelectorAll(
-      "button[class*='close'], svg[class*='close'], [class*='tab__close'], [class*='tab-close']"
+  function detectActiveAssetFromDOM() {
+    // 1. Look for the active tab (the one with the chevron or close icon)
+    const tabCandidates = document.querySelectorAll(
+      "[class*='tab'], [class*='item'], div[role='tab'], button[role='tab']"
     );
-    for (const btn of closeButtons) {
-      const parentTab = btn.closest("[class*='tab'], [class*='item']");
-      if (parentTab) {
-        const clone = parentTab.cloneNode(true);
-        clone.querySelectorAll("button, svg, [class*='close'], [class*='payout'], [class*='percent']").forEach(n => n.remove());
-        const name = parseCleanName(clone.textContent);
-        if (name) return name;
-      }
-    }
 
-    // 2. Active tab with chevron/arrow
-    const dropdownIcons = document.querySelectorAll("[class*='arrow'], [class*='chevron']");
-    for (const icon of dropdownIcons) {
-      const parentTab = icon.closest("[class*='tab'], [class*='item']");
-      if (parentTab) {
-        const clone = parentTab.cloneNode(true);
-        clone.querySelectorAll("button, svg, [class*='payout'], [class*='percent']").forEach(n => n.remove());
-        const name = parseCleanName(clone.textContent);
-        if (name) return name;
-      }
-    }
+    for (const el of tabCandidates) {
+      if (el.closest("#qx-assistant-panel")) continue;
+      const svgCount = el.querySelectorAll("svg").length;
+      const hasChevronOrClose = el.querySelector("[class*='close'], [class*='chevron'], [class*='arrow'], svg path[d*='M']");
+      const cls = (el.className || "") + " " + (el.getAttribute("aria-selected") || "");
+      const isActive = /active|selected|current/i.test(cls);
 
-    // 3. Elements with active class
-    const activeTabs = document.querySelectorAll("[class*='tab'][class*='active'], [class*='tab--active'], [class*='is-active']");
-    for (const tab of activeTabs) {
-      const clone = tab.cloneNode(true);
-      clone.querySelectorAll("button, svg, [class*='close'], [class*='payout'], [class*='percent']").forEach(n => n.remove());
-      const name = parseCleanName(clone.textContent);
-      if (name) return name;
+      const name = parseAssetName(el.innerText || el.textContent || "");
+      if (name && (isActive || svgCount >= 2 || hasChevronOrClose)) {
+        return name;
+      }
     }
 
     return null;
   }
 
-  let activeAsset = detectActiveAsset() || "USD/BRL (OTC)";
+  let activeAsset = detectActiveAssetFromDOM() || "USD/BRL (OTC)";
   let state = getAssetState(activeAsset);
 
-  function switchAsset(newAsset) {
-    if (!newAsset || newAsset === activeAsset) return;
-    activeAsset = newAsset;
+  function switchAsset(newName) {
+    if (!newName || newName === activeAsset) return;
+    console.log("[QX-Assistant] Switched active asset to:", newName);
+    activeAsset = newName;
     state = getAssetState(activeAsset);
-    window.postMessage({ type: "QX_RESET_LOCK" }, "*");
     saveCache();
     updateUI();
   }
 
-  document.addEventListener("click", () => {
-    setTimeout(() => switchAsset(detectActiveAsset()), 100);
-    setTimeout(() => switchAsset(detectActiveAsset()), 350);
-  });
-
-  setInterval(() => {
-    const detected = detectActiveAsset();
-    if (detected && detected !== activeAsset) {
-      switchAsset(detected);
+  // CAPTURE-PHASE CLICK: Catches tab clicks before Quotex can stopPropagation()
+  document.addEventListener("click", (e) => {
+    if (e.target.closest("#qx-assistant-panel")) return;
+    let node = e.target;
+    for (let i = 0; i < 4 && node && node !== document.body; i++) {
+      const txt = node.innerText || node.textContent || "";
+      const asset = parseAssetName(txt);
+      if (asset) {
+        switchAsset(asset);
+        break;
+      }
+      node = node.parentElement;
     }
-  }, 500);
+  }, true);
 
-  function ingestHistory(candles) {
-    if (!candles || candles.length === 0) return;
-    const map = new Map();
-    state.candles1m.forEach(c => map.set(c.time, c));
-    candles.forEach(c => map.set(c.time, c));
-    state.candles1m = Array.from(map.values()).sort((a, b) => a.time - b.time);
-    if (state.candles1m.length > 240) state.candles1m = state.candles1m.slice(-240);
-    saveCache();
-    updateUI();
-  }
+  // Background polling backup for DOM changes
+  setInterval(() => {
+    const domAsset = detectActiveAssetFromDOM();
+    if (domAsset && domAsset !== activeAsset) {
+      switchAsset(domAsset);
+    }
+  }, 400);
 
-  function ingestTick(price, time) {
+  // ==========================================
+  // REAL-TIME ZERO-WAIT PRICE INGESTION
+  // ==========================================
+  function ingestFastTick(price, time) {
     state.livePrice = price;
     const minFloor = Math.floor(time / 60000) * 60000;
 
@@ -134,6 +128,21 @@
       state.currentCandle = { time: minFloor, open: price, high: price, low: price, close: price };
       saveCache();
     }
+
+    // Instant UI paint
+    const priceEl = document.getElementById("qx-ui-price");
+    if (priceEl) priceEl.textContent = price.toFixed(5);
+    updateAnalysis();
+  }
+
+  function ingestHistory(candles) {
+    if (!candles || candles.length === 0) return;
+    const map = new Map();
+    state.candles1m.forEach(c => map.set(c.time, c));
+    candles.forEach(c => map.set(c.time, c));
+    state.candles1m = Array.from(map.values()).sort((a, b) => a.time - b.time);
+    if (state.candles1m.length > 240) state.candles1m = state.candles1m.slice(-240);
+    saveCache();
     updateUI();
   }
 
@@ -185,7 +194,7 @@
   }
 
   // ==========================================
-  // DRAGGABLE UI COMPONENT
+  // DRAGGABLE UI SETUP
   // ==========================================
   function mountUI() {
     if (document.getElementById("qx-assistant-panel")) return;
@@ -197,7 +206,7 @@
       <div id="qx-panel-header">
         <div id="qx-panel-title">
           <span class="qx-badge">READ ONLY</span>
-          <strong>QX Assistant</strong> <small>v1.3.1</small>
+          <strong>QX Assistant</strong> <small>v1.3.2</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-reset-pos" title="Reset Position">[R]</button>
@@ -245,6 +254,7 @@
     `;
     document.body.appendChild(panel);
 
+    // Restore saved position
     const savedPos = localStorage.getItem("__qx_panel_pos__");
     if (savedPos) {
       try {
@@ -255,6 +265,7 @@
       } catch (_) {}
     }
 
+    // Header drag handler
     const header = panel.querySelector("#qx-panel-header");
     let isDragging = false;
     let dragOffset = { x: 0, y: 0 };
@@ -312,23 +323,11 @@
     document.addEventListener("DOMContentLoaded", mountUI);
   }
   const checkTimer = setInterval(() => {
-    if (document.getElementById("qx-assistant-panel")) {
-      clearInterval(checkTimer);
-    } else {
-      mountUI();
-    }
-  }, 500);
+    if (document.getElementById("qx-assistant-panel")) clearInterval(checkTimer);
+    else mountUI();
+  }, 400);
 
-  function updateUI() {
-    const assetEl = document.getElementById("qx-ui-asset");
-    if (!assetEl) return;
-    assetEl.textContent = activeAsset;
-
-    if (state.livePrice !== null) {
-      const priceEl = document.getElementById("qx-ui-price");
-      if (priceEl) priceEl.textContent = state.livePrice.toFixed(5);
-    }
-
+  function updateAnalysis() {
     const m1List = [...state.candles1m];
     if (state.currentCandle) m1List.push(state.currentCandle);
     const m5List = getAggregate(state.candles1m, state.currentCandle, 5);
@@ -354,11 +353,24 @@
     if (m5El) m5El.textContent = m5List.length >= 2 ? (m5List[m5List.length - 1].close > m5List[0].close ? "Bullish" : "Bearish") : "Neutral";
   }
 
+  function updateUI() {
+    const assetEl = document.getElementById("qx-ui-asset");
+    if (assetEl) assetEl.textContent = activeAsset;
+
+    if (state.livePrice !== null) {
+      const priceEl = document.getElementById("qx-ui-price");
+      if (priceEl) priceEl.textContent = state.livePrice.toFixed(5);
+    }
+    updateAnalysis();
+  }
+
   window.addEventListener("message", (e) => {
-    if (e.data?.type === "QX_PRICE_TICK") {
-      ingestTick(e.data.payload.price, e.data.payload.timestamp);
+    if (e.data?.type === "QX_FAST_PRICE_TICK") {
+      ingestFastTick(e.data.payload.price, e.data.payload.timestamp);
     } else if (e.data?.type === "QX_HISTORICAL_CANDLES") {
       ingestHistory(e.data.payload);
+    } else if (e.data?.type === "QX_WS_ASSET_DETECTED") {
+      switchAsset(e.data.payload);
     }
   });
 })();
