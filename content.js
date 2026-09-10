@@ -19,7 +19,7 @@
 
   function getVaultEntry(name) {
     if (!name || name === "Detecting...") {
-      return { candles1m: [], currentCandle: null, livePrice: null, rawPrice: null, decimals: 2 };
+      return { candles1m: [], currentCandle: null, livePrice: null, rawPrice: null, decimals: 3 };
     }
     if (!assetVault.has(name)) {
       assetVault.set(name, {
@@ -27,79 +27,98 @@
         currentCandle: null,
         livePrice: null,
         rawPrice: null,
-        decimals: 2
+        decimals: 3
       });
     }
     return assetVault.get(name);
   }
 
-  // UNIVERSAL CLEANER: Strips payout %, UI buttons, and spaces
-  function cleanAssetName(raw) {
+  // BULLETPROOF ASSET NAME SANITIZER
+  function cleanAssetString(raw) {
     if (!raw || typeof raw !== "string") return null;
-    let s = raw.replace(/\b\d{1,3}%\b/g, "").replace(/[\n\r\t]/g, " ").trim();
+    let s = raw.replace(/\d{1,3}\s*%/g, "").trim();
     if (/^(settings|store|tick|live|demo|trade|chart|deposit|pair information|beginning of trade)$/i.test(s)) return null;
     s = s.replace(/PAIR INFORMATION/gi, "").replace(/BEGINNING OF TRADE/gi, "").trim();
     s = s.replace(/\s+/g, " ");
 
-    if (s.length >= 3 && s.length <= 30 && !/^\d+$/.test(s)) {
-      return s;
+    // Remove any trailing dots from UI ellipsis (e.g. "USD/PKR..." -> "USD/PKR")
+    s = s.replace(/[\.…]+$/, "").trim();
+
+    // Reject if string is empty, contains remaining %, or is purely numeric
+    if (!s || s.length < 2 || s.includes("%") || /^\d+$/.test(s)) return null;
+
+    // Currency pair check: format as USD/PKR (OTC)
+    const pairMatch = s.match(/([A-Z]{3}\/[A-Z]{3})/i);
+    if (pairMatch) {
+      return `${pairMatch[1].toUpperCase()} (OTC)`;
     }
+
+    // Indices, Crypto & Commodities (e.g. FTSE 100, Bitcoin Cash, Gold)
+    if (/^[A-Za-z0-9\.\-\s]{3,25}$/.test(s)) {
+      if (!/^(close|active|tab|payout|pin)$/i.test(s)) {
+        return s;
+      }
+    }
+
     return null;
   }
 
-  // TARGETS ACTIVE TAB IN TOP STRIP
-  function getActiveTabName() {
-    // 1. Target tab containing the close cross (x)
+  // FINDS THE ONE ACTIVE TAB CONTAINER
+  function getActiveTabElement() {
+    // 1. Look for tab with the close cross icon (Quotex only renders close button on active tab)
     const closeButtons = document.querySelectorAll(
       "button[class*='close'], svg[class*='close'], [class*='tab-close'], [class*='tab__close'], [aria-label*='close']"
     );
     for (const btn of closeButtons) {
       if (btn.closest("#qx-assistant-panel")) continue;
-      const tab = btn.closest("[class*='tab'], [class*='item'], div");
-      if (tab && tab.getBoundingClientRect().top <= 110) {
-        const clone = tab.cloneNode(true);
-        clone.querySelectorAll("button, svg, [class*='close']").forEach(n => n.remove());
-        const name = cleanAssetName(clone.textContent || clone.innerText);
-        if (name) return name;
+      const tab = btn.closest("[class*='tab--'], [class*='tabs__item'], [class*='tab-item'], [class*='tab']");
+      if (tab && tab.getBoundingClientRect().top <= 100) {
+        return tab;
       }
     }
 
-    // 2. Target tab with dropdown chevron
-    const dropdowns = document.querySelectorAll("[class*='dropdown'], [class*='chevron'], [class*='arrow']");
-    for (const d of dropdowns) {
-      if (d.closest("#qx-assistant-panel")) continue;
-      const tab = d.closest("[class*='tab'], [class*='item'], div");
-      if (tab && tab.getBoundingClientRect().top <= 110) {
-        const clone = tab.cloneNode(true);
-        clone.querySelectorAll("button, svg").forEach(n => n.remove());
-        const name = cleanAssetName(clone.textContent || clone.innerText);
-        if (name) return name;
-      }
-    }
-
-    // 3. Fallback to active class
-    const activeEls = document.querySelectorAll(
+    // 2. Look for active class in top bar
+    const activeTabs = document.querySelectorAll(
       ".tab--active, .tabs__item--active, [class*='tab'][class*='active'], [class*='item'][class*='active'], [aria-selected='true']"
     );
-    for (const el of activeEls) {
-      if (el.closest("#qx-assistant-panel")) continue;
-      if (el.getBoundingClientRect().top <= 110) {
-        const clone = el.cloneNode(true);
-        clone.querySelectorAll("button, svg, [class*='close']").forEach(n => n.remove());
-        const name = cleanAssetName(clone.textContent || clone.innerText);
-        if (name) return name;
+    for (const tab of activeTabs) {
+      if (tab.closest("#qx-assistant-panel")) continue;
+      if (tab.getBoundingClientRect().top <= 100) {
+        return tab;
       }
     }
-
     return null;
   }
 
-  let activeAsset = getActiveTabName() || "Detecting...";
+  function getActiveAssetName() {
+    const tab = getActiveTabElement();
+    if (!tab) return null;
+
+    // A. Check title or aria-label attributes first
+    const titleAttr = tab.getAttribute("title") || tab.getAttribute("aria-label");
+    if (titleAttr) {
+      const name = cleanAssetString(titleAttr);
+      if (name) return name;
+    }
+
+    // B. Check specific asset name sub-element inside tab
+    const nameEl = tab.querySelector("[class*='name'], [class*='asset'], [class*='title']");
+    if (nameEl) {
+      const name = cleanAssetString(nameEl.textContent || nameEl.innerText);
+      if (name) return name;
+    }
+
+    // C. Clone tab and explicitly strip payout, badge, buttons, and SVGs
+    const clone = tab.cloneNode(true);
+    clone.querySelectorAll("button, svg, [class*='payout'], [class*='percent'], [class*='badge'], [class*='close']").forEach(n => n.remove());
+    return cleanAssetString(clone.textContent || clone.innerText);
+  }
+
+  let activeAsset = getActiveAssetName() || "Detecting...";
   let state = getVaultEntry(activeAsset);
 
   function switchAsset(newName) {
     if (!newName || newName === activeAsset || newName === "Detecting...") return;
-    console.log("[QX-Assistant] Switch active asset to:", newName);
     activeAsset = newName;
     state = getVaultEntry(activeAsset);
 
@@ -117,10 +136,8 @@
     if (e.target.closest("#qx-assistant-panel")) return;
     let el = e.target;
     for (let i = 0; i < 5 && el && el !== document.body; i++) {
-      if (el.getBoundingClientRect().top <= 110) {
-        const clone = el.cloneNode(true);
-        clone.querySelectorAll("button, svg").forEach(n => n.remove());
-        const name = cleanAssetName(clone.textContent || clone.innerText);
+      if (el.getBoundingClientRect().top <= 100) {
+        const name = cleanAssetString(el.textContent || el.innerText || "");
         if (name) {
           switchAsset(name);
           break;
@@ -131,7 +148,7 @@
   }, true);
 
   setInterval(() => {
-    const current = getActiveTabName();
+    const current = getActiveAssetName();
     if (current && current !== activeAsset) {
       switchAsset(current);
     }
@@ -142,7 +159,7 @@
   // ==========================================
   function ingestFastTick(price, rawText, decimals, time) {
     if (activeAsset === "Detecting...") {
-      const found = getActiveTabName();
+      const found = getActiveAssetName();
       if (found) switchAsset(found);
     }
 
@@ -184,7 +201,7 @@
 
     if (activeAsset === "Detecting...") {
       pendingCandles = candles;
-      const found = getActiveTabName();
+      const found = getActiveAssetName();
       if (found) switchAsset(found);
       return;
     }
@@ -275,7 +292,7 @@
       <div id="qx-panel-header">
         <div id="qx-panel-title">
           <span class="qx-badge">READ ONLY</span>
-          <strong>QX Assistant</strong> <small>v1.4.1</small>
+          <strong>QX Assistant</strong> <small>v1.4.2</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-refresh" title="Synchronize Tabs & History">[Sync]</button>
@@ -370,7 +387,7 @@
     const btnRefresh = document.getElementById("qx-btn-refresh");
     btnRefresh.addEventListener("click", () => {
       btnRefresh.textContent = "[...]";
-      const found = getActiveTabName();
+      const found = getActiveAssetName();
       if (found) switchAsset(found);
       window.postMessage({ type: "QX_REQ_REPLAY" }, "*");
       setTimeout(() => {
@@ -408,9 +425,8 @@
   }, 400);
 
   function updateAnalysis() {
-    const dec = state.decimals !== undefined ? state.decimals : 2;
+    const dec = state.decimals !== undefined ? state.decimals : 3;
 
-    // SANITY FILTER: Candles must be within 30% of current live price
     let cleanCandles = [...state.candles1m];
     if (state.livePrice !== null && cleanCandles.length > 0) {
       cleanCandles = cleanCandles.filter(c => Math.abs(c.close - state.livePrice) / state.livePrice < 0.3);
@@ -449,7 +465,7 @@
 
     const priceEl = document.getElementById("qx-ui-price");
     if (priceEl && (state.rawPrice || state.livePrice !== null)) {
-      priceEl.textContent = state.rawPrice || state.livePrice.toFixed(state.decimals !== undefined ? state.decimals : 2);
+      priceEl.textContent = state.rawPrice || state.livePrice.toFixed(state.decimals !== undefined ? state.decimals : 3);
     }
     updateAnalysis();
   }

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.4.1",
-  "description": "Read-only multi-timeframe assistant with universal asset support and flexible decimal matching.",
+  "version": "1.4.2",
+  "description": "Read-only multi-timeframe assistant with bulletproof asset title isolation.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",
