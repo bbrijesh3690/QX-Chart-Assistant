@@ -2,11 +2,11 @@
   if (window.__QX_PAGE_HOOK__) return;
   window.__QX_PAGE_HOOK__ = true;
 
-  const historyRingBuffer = [];
+  const historyRing = [];
   let lastPrice = null;
   let lastTime = 0;
 
-  // 1. FAST 60FPS CANVAS PRICE PASS-THROUGH
+  // 1. FAST 60FPS CANVAS PRICE EMITTER (1 to 6 decimals)
   const origFill = CanvasRenderingContext2D.prototype.fillText;
   CanvasRenderingContext2D.prototype.fillText = function (text, x, y, maxW) {
     if (typeof text === "string") {
@@ -129,13 +129,12 @@
       const candles = deepSearch(parsed);
       if (candles && candles.length >= 8) {
         const samplePrice = candles[candles.length - 1].close;
-        const packet = { candles: candles, samplePrice: samplePrice, timestamp: Date.now() };
+        const pkt = { candles: candles, samplePrice: samplePrice, time: Date.now() };
 
-        // Keep last 15 historical bursts in memory
-        historyRingBuffer.unshift(packet);
-        if (historyRingBuffer.length > 15) historyRingBuffer.pop();
+        historyRing.unshift(pkt);
+        if (historyRing.length > 20) historyRing.pop();
 
-        window.postMessage({ type: "QX_HISTORICAL_CANDLES", payload: packet }, "*");
+        window.postMessage({ type: "QX_HISTORICAL_CANDLES", payload: pkt }, "*");
       }
     } catch (_) {}
   }
@@ -152,11 +151,10 @@
   };
   window.WebSocket.prototype = OrigWS.prototype;
 
-  // Replay all buffered history on sync request
   window.addEventListener("message", (e) => {
     if (e.data?.type === "QX_REQ_REPLAY") {
-      historyRingBuffer.forEach(pkt => {
-        window.postMessage({ type: "QX_HISTORICAL_CANDLES", payload: pkt }, "*");
+      historyRing.forEach(p => {
+        window.postMessage({ type: "QX_HISTORICAL_CANDLES", payload: p }, "*");
       });
     }
   });

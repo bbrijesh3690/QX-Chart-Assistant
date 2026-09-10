@@ -1,6 +1,6 @@
 (function () {
   const assetVault = new Map();
-  const globalHistoryCache = [];
+  const globalHistoryPool = [];
 
   function loadVault() {
     try {
@@ -33,67 +33,83 @@
     return assetVault.get(name);
   }
 
-  // ROBUST ASSET NAME CLEANER
-  function sanitizeAssetName(raw) {
+  // ROBUST ASSET STRING PARSER
+  function parseCleanAssetName(raw) {
     if (!raw || typeof raw !== "string") return null;
-    let s = raw.replace(/\d{1,3}\s*%/g, "").trim();
-    if (/^(settings|store|tick|live|demo|trade|chart|deposit|pair information|beginning of trade)$/i.test(s)) return null;
-    s = s.replace(/PAIR INFORMATION/gi, "").replace(/BEGINNING OF TRADE/gi, "").trim();
-    s = s.replace(/\s+/g, " ");
+    const lines = raw.split(/[\n\r]+/).map(l => l.trim()).filter(Boolean);
 
-    // Remove trailing dots from Quotex UI truncation (e.g. "USD/PKR..." -> "USD/PKR")
-    s = s.replace(/[\.…]+$/, "").trim();
+    for (let line of lines) {
+      line = line.replace(/\d{1,3}\s*%/g, "").trim();
+      line = line.replace(/[\.…]+$/, "").trim(); // Removes "USD/PKR..." truncation
+      if (!line || line.length < 2 || line.includes("%") || /^\d+$/.test(line)) continue;
+      if (/^(pair|information|beginning|trade|close|active|tab|pin|favorite|payout)$/i.test(line)) continue;
 
-    if (!s || s.length < 2 || s.includes("%") || /^\d+$/.test(s)) return null;
+      // Currency pairs (USD/PKR -> USD/PKR (OTC))
+      const m = line.match(/([A-Z]{3}\/[A-Z]{3})/i);
+      if (m) {
+        return `${m[1].toUpperCase()} (OTC)`;
+      }
 
-    // Currency pair check: USD/PKR -> USD/PKR (OTC)
-    const pairMatch = s.match(/([A-Z]{3}\/[A-Z]{3})/i);
-    if (pairMatch) {
-      return `${pairMatch[1].toUpperCase()} (OTC)`;
-    }
-
-    // Indices, Crypto & Commodities
-    if (/^[A-Za-z0-9\.\-\s]{3,25}$/.test(s)) {
-      if (!/^(close|active|tab|payout|pin)$/i.test(s)) {
-        return s;
+      // Indices, Crypto & Commodities (FTSE 100, Bitcoin Cash (OTC), Gold)
+      if (/^[A-Za-z0-9\.\-\s]{3,25}$/.test(line)) {
+        return line;
       }
     }
     return null;
   }
 
-  // FINDS THE ACTIVE TAB IN QUOTEX HEADER
-  function findActiveTabAsset() {
-    const tabCandidates = document.querySelectorAll("[class*='tab'], [class*='tabs__item'], div[role='tab']");
+  // HIGH-CONFIDENCE SCORED ACTIVE TAB DETECTOR
+  function getActiveTabFromDOM() {
+    const allEls = document.querySelectorAll("div, a, button, li");
+    const tabCandidates = [];
+
+    for (const el of allEls) {
+      if (el.closest("#qx-assistant-panel")) continue;
+      const r = el.getBoundingClientRect();
+      if (r.top >= 0 && r.top <= 85 && r.height >= 22 && r.height <= 60 && r.width >= 55 && r.width <= 320) {
+        const text = el.innerText || el.textContent || "";
+        if (/\d{1,3}\s*%/.test(text) || /\(OTC\)/i.test(text) || /[A-Z]{3}\/[A-Z]{3}/i.test(text)) {
+          tabCandidates.push(el);
+        }
+      }
+    }
+
+    let bestTab = null;
+    let maxScore = -1;
 
     for (const tab of tabCandidates) {
-      if (tab.closest("#qx-assistant-panel")) continue;
-      const rect = tab.getBoundingClientRect();
-      if (rect.top < 0 || rect.top > 120 || rect.width < 45 || rect.width > 350) continue;
-
-      const hasClose = tab.querySelector("[class*='close'], svg path[d*='M'], [aria-label*='close']");
-      const hasChevron = tab.querySelector("[class*='chevron'], [class*='arrow'], [class*='dropdown']");
+      let score = 0;
       const svgs = tab.querySelectorAll("svg");
-      const isClassActive = /(active|selected|current)/i.test((tab.className || "") + " " + (tab.getAttribute("aria-selected") || ""));
+      score += svgs.length * 3;
 
-      // In Quotex, active tab has close button/chevron or active class
-      if (isClassActive || (hasClose && hasChevron) || svgs.length >= 2) {
-        const clone = tab.cloneNode(true);
-        clone.querySelectorAll("button, svg, [class*='close'], [class*='payout'], [class*='percent'], [class*='badge']").forEach(el => el.remove());
-        const clean = sanitizeAssetName(clone.textContent || clone.innerText);
-        if (clean) return clean;
+      if (tab.querySelector("button, [class*='close'], [class*='chevron'], [class*='arrow']")) {
+        score += 5;
+      }
+
+      const cls = (tab.className || "") + " " + (tab.getAttribute("aria-selected") || "");
+      if (/active|selected|current/i.test(cls)) {
+        score += 6;
+      }
+
+      if (score > maxScore) {
+        const name = parseCleanAssetName(tab.innerText || tab.textContent || "");
+        if (name) {
+          maxScore = score;
+          bestTab = name;
+        }
       }
     }
-    return null;
+    return bestTab;
   }
 
-  let activeAsset = findActiveTabAsset() || "Detecting...";
+  let activeAsset = getActiveTabFromDOM() || "Detecting...";
   let state = getVaultEntry(activeAsset);
 
-  // HYDRATE CANDLES FROM PRICE-INDEXED CACHE
-  function tryHydrateFromHistoryCache() {
-    if (state.candles1m.length >= 15 || state.livePrice === null) return;
-    for (const pkt of globalHistoryCache) {
-      if (Math.abs(pkt.samplePrice - state.livePrice) / state.livePrice < 0.25) {
+  // RETROACTIVE HISTORY HYDRATION (Binds cached candles by price scale)
+  function tryHydrateCandles() {
+    if (state.candles1m.length >= 20 || state.livePrice === null) return;
+    for (const pkt of globalHistoryPool) {
+      if (Math.abs(pkt.samplePrice - state.livePrice) / state.livePrice <= 0.25) {
         state.candles1m = [...pkt.candles];
         saveVault();
         updateUI();
@@ -104,45 +120,25 @@
 
   function switchAsset(newName) {
     if (!newName || newName === activeAsset || newName === "Detecting...") return;
-    console.log("[QX-Assistant] Switched active asset:", newName);
+    console.log("[QX-Assistant] Switch active asset to:", newName);
     activeAsset = newName;
     state = getVaultEntry(activeAsset);
 
-    // If candle count is low, pull matching candles from cache immediately
-    tryHydrateFromHistoryCache();
-
+    tryHydrateCandles();
     saveVault();
     updateUI();
   }
 
-  // 1. INSTANT MUTATION OBSERVER (Fires when tabs open/switch <30ms)
-  let observerDebounce = null;
-  const observer = new MutationObserver(() => {
-    clearTimeout(observerDebounce);
-    observerDebounce = setTimeout(() => {
-      const found = findActiveTabAsset();
-      if (found && found !== activeAsset) {
-        switchAsset(found);
-      }
-    }, 30);
-  });
-
-  observer.observe(document.documentElement, {
-    childList: true,
-    subtree: true,
-    attributes: true,
-    attributeFilter: ["class", "aria-selected", "style"]
-  });
-
-  // 2. POINTERDOWN EVENT CAPTURE
+  // 1. UNIVERSAL CLICK CAPTURE (Catches clicks inside + modal AND top tab strip)
   document.addEventListener("pointerdown", (e) => {
     if (e.target.closest("#qx-assistant-panel")) return;
     let el = e.target;
-    for (let i = 0; i < 5 && el && el !== document.body; i++) {
-      if (el.getBoundingClientRect().top <= 120) {
-        const name = sanitizeAssetName(el.textContent || el.innerText || "");
-        if (name) {
-          switchAsset(name);
+    for (let i = 0; i < 6 && el && el !== document.body; i++) {
+      const text = el.innerText || el.textContent || "";
+      if (/\d{1,3}\s*%/.test(text) || /\(OTC\)/i.test(text) || /[A-Z]{3}\/[A-Z]{3}/i.test(text)) {
+        const parsed = parseCleanAssetName(text);
+        if (parsed) {
+          switchAsset(parsed);
           break;
         }
       }
@@ -150,12 +146,39 @@
     }
   }, true);
 
+  // 2. DOM MUTATION OBSERVER (Triggers when new tabs attach to DOM)
+  let observerDebounce = null;
+  const observer = new MutationObserver(() => {
+    clearTimeout(observerDebounce);
+    observerDebounce = setTimeout(() => {
+      const found = getActiveTabFromDOM();
+      if (found && found !== activeAsset) {
+        switchAsset(found);
+      }
+    }, 40);
+  });
+
+  observer.observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ["class", "aria-selected"]
+  });
+
+  // Background interval backup
+  setInterval(() => {
+    const found = getActiveTabFromDOM();
+    if (found && found !== activeAsset) {
+      switchAsset(found);
+    }
+  }, 400);
+
   // ==========================================
-  // PRICE INGESTION & OUTLIER PROTECTION
+  // PRICE & CANDLE INGESTION
   // ==========================================
   function ingestFastTick(price, rawText, decimals, time) {
     if (activeAsset === "Detecting...") {
-      const found = findActiveTabAsset();
+      const found = getActiveTabFromDOM();
       if (found) switchAsset(found);
     }
 
@@ -163,20 +186,19 @@
     state.rawPrice = rawText;
     if (decimals !== undefined) state.decimals = decimals;
 
-    // If candles are missing, hydrate from history cache using verified live price
-    if (state.candles1m.length < 15) {
-      tryHydrateFromHistoryCache();
+    if (state.candles1m.length < 20) {
+      tryHydrateCandles();
     }
 
     const minFloor = Math.floor(time / 60000) * 60000;
 
-    // Purge contaminated candles from a previous price scale
+    // Purge candles if an incompatible price scale slipped in
     if (state.candles1m.length > 0) {
       const last = state.candles1m[state.candles1m.length - 1];
       if (Math.abs(last.close - price) / price > 0.40) {
         state.candles1m = [];
         state.currentCandle = null;
-        tryHydrateFromHistoryCache();
+        tryHydrateCandles();
       }
     }
 
@@ -201,11 +223,11 @@
   function ingestHistory(candles, samplePrice) {
     if (!candles || candles.length === 0) return;
 
-    // Cache in global history pool
-    globalHistoryCache.unshift({ candles: candles, samplePrice: samplePrice });
-    if (globalHistoryCache.length > 20) globalHistoryCache.pop();
+    // Save into global pool
+    globalHistoryPool.unshift({ candles: candles, samplePrice: samplePrice });
+    if (globalHistoryPool.length > 25) globalHistoryPool.pop();
 
-    // Match directly to active asset if price is within 25%
+    // Match to active asset if live price is within range
     if (state.livePrice !== null && Math.abs(samplePrice - state.livePrice) / state.livePrice <= 0.25) {
       state.candles1m = [...candles];
       saveVault();
@@ -213,7 +235,7 @@
       return;
     }
 
-    // Match to any existing vault asset matching this price
+    // Match to existing vault assets
     for (const [name, data] of assetVault.entries()) {
       if (data.livePrice !== null && Math.abs(samplePrice - data.livePrice) / data.livePrice <= 0.25) {
         data.candles1m = [...candles];
@@ -281,7 +303,7 @@
       <div id="qx-panel-header">
         <div id="qx-panel-title">
           <span class="qx-badge">READ ONLY</span>
-          <strong>QX Assistant</strong> <small>v1.4.3</small>
+          <strong>QX Assistant</strong> <small>v1.4.4</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-refresh" title="Synchronize Tabs & History">[Sync]</button>
@@ -376,9 +398,9 @@
     const btnRefresh = document.getElementById("qx-btn-refresh");
     btnRefresh.addEventListener("click", () => {
       btnRefresh.textContent = "[...]";
-      const found = findActiveTabAsset();
+      const found = getActiveTabFromDOM();
       if (found) switchAsset(found);
-      tryHydrateFromHistoryCache();
+      tryHydrateCandles();
       window.postMessage({ type: "QX_REQ_REPLAY" }, "*");
       setTimeout(() => {
         btnRefresh.textContent = "[Sync]";

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.4.3",
-  "description": "Read-only assistant with self-healing history cache and instant DOM mutation observer.",
+  "version": "1.4.4",
+  "description": "Read-only assistant with universal click detection and retroactive history hydration.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",
