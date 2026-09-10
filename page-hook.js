@@ -6,7 +6,7 @@
   let lastPrice = null;
   let lastTime = 0;
 
-  // 1. FAST 60FPS CANVAS PRICE EMITTER (1 to 6 decimals)
+  // 1. FAST 60FPS PRICE PASS-THROUGH
   const origFill = CanvasRenderingContext2D.prototype.fillText;
   CanvasRenderingContext2D.prototype.fillText = function (text, x, y, maxW) {
     if (typeof text === "string") {
@@ -132,7 +132,7 @@
         const pkt = { candles: candles, samplePrice: samplePrice, time: Date.now() };
 
         historyRing.unshift(pkt);
-        if (historyRing.length > 20) historyRing.pop();
+        if (historyRing.length > 25) historyRing.pop();
 
         window.postMessage({ type: "QX_HISTORICAL_CANDLES", payload: pkt }, "*");
       }

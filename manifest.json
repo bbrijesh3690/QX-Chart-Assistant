@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.4.4",
-  "description": "Read-only assistant with universal click detection and retroactive history hydration.",
+  "version": "1.4.5",
+  "description": "Read-only assistant with zero-fallback tab detection and isolated session history vaults.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",

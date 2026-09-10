@@ -1,17 +1,24 @@
 (function () {
+  // Purge legacy storage keys from earlier versions
+  try {
+    sessionStorage.removeItem("__QX_SESSION_CACHE__");
+    sessionStorage.removeItem("__QX_ASSET_VAULT__");
+  } catch (_) {}
+
+  const VAULT_KEY = "__QX_ASSET_VAULT_V3__";
   const assetVault = new Map();
   const globalHistoryPool = [];
 
   function loadVault() {
     try {
-      const raw = sessionStorage.getItem("__QX_ASSET_VAULT__");
+      const raw = sessionStorage.getItem(VAULT_KEY);
       if (raw) JSON.parse(raw).forEach(([k, v]) => assetVault.set(k, v));
     } catch (_) {}
   }
 
   function saveVault() {
     try {
-      sessionStorage.setItem("__QX_ASSET_VAULT__", JSON.stringify(Array.from(assetVault.entries())));
+      sessionStorage.setItem(VAULT_KEY, JSON.stringify(Array.from(assetVault.entries())));
     } catch (_) {}
   }
 
@@ -33,79 +40,98 @@
     return assetVault.get(name);
   }
 
-  // ROBUST ASSET STRING PARSER
-  function parseCleanAssetName(raw) {
+  // ROBUST SANITIZER FOR ANY ASSET CLASS
+  function formatCleanName(raw) {
     if (!raw || typeof raw !== "string") return null;
-    const lines = raw.split(/[\n\r]+/).map(l => l.trim()).filter(Boolean);
+    let s = raw.replace(/\d{1,3}\s*%/g, "").trim();
+    s = s.replace(/PAIR INFORMATION/gi, "").replace(/BEGINNING OF TRADE/gi, "").trim();
+    s = s.replace(/[\r\n\t]+/g, " ");
+    s = s.replace(/[\.…]+$/, "").trim(); // Strips "USD/PKR..." truncation
+    s = s.replace(/\s+/g, " ");
 
-    for (let line of lines) {
-      line = line.replace(/\d{1,3}\s*%/g, "").trim();
-      line = line.replace(/[\.…]+$/, "").trim(); // Removes "USD/PKR..." truncation
-      if (!line || line.length < 2 || line.includes("%") || /^\d+$/.test(line)) continue;
-      if (/^(pair|information|beginning|trade|close|active|tab|pin|favorite|payout)$/i.test(line)) continue;
+    if (!s || s.length < 2 || s.includes("%") || /^\d+$/.test(s)) return null;
+    if (/^(close|tab|payout|pin|active|favorite)$/i.test(s)) return null;
 
-      // Currency pairs (USD/PKR -> USD/PKR (OTC))
-      const m = line.match(/([A-Z]{3}\/[A-Z]{3})/i);
-      if (m) {
-        return `${m[1].toUpperCase()} (OTC)`;
-      }
+    // Currency Pairs (e.g. USD/PKR -> USD/PKR (OTC))
+    const pairMatch = s.match(/([A-Z]{3}\/[A-Z]{3})/i);
+    if (pairMatch) {
+      return `${pairMatch[1].toUpperCase()} (OTC)`;
+    }
 
-      // Indices, Crypto & Commodities (FTSE 100, Bitcoin Cash (OTC), Gold)
-      if (/^[A-Za-z0-9\.\-\s]{3,25}$/.test(line)) {
-        return line;
-      }
+    // Indices, Crypto & Commodities (e.g. FTSE 100, Bitcoin Cash (OTC), Gold)
+    const generalMatch = s.match(/([A-Za-z0-9\.\-\s]+(?:\(OTC\))?)/i);
+    if (generalMatch && generalMatch[1].trim().length >= 3) {
+      return generalMatch[1].trim();
     }
     return null;
   }
 
-  // HIGH-CONFIDENCE SCORED ACTIVE TAB DETECTOR
+  // DETERMINISTIC ACTIVE TAB FINDER (1 vs 3+ SVG RULE)
   function getActiveTabFromDOM() {
-    const allEls = document.querySelectorAll("div, a, button, li");
-    const tabCandidates = [];
+    const candidateTabs = [];
+    const elements = document.querySelectorAll("*");
 
-    for (const el of allEls) {
+    for (const el of elements) {
       if (el.closest("#qx-assistant-panel")) continue;
       const r = el.getBoundingClientRect();
-      if (r.top >= 0 && r.top <= 85 && r.height >= 22 && r.height <= 60 && r.width >= 55 && r.width <= 320) {
+      // Tabs sit in top 75px, width 55px to 320px, height 22px to 60px
+      if (r.top >= 0 && r.top <= 75 && r.height >= 22 && r.height <= 60 && r.width >= 55 && r.width <= 320) {
         const text = el.innerText || el.textContent || "";
-        if (/\d{1,3}\s*%/.test(text) || /\(OTC\)/i.test(text) || /[A-Z]{3}\/[A-Z]{3}/i.test(text)) {
-          tabCandidates.push(el);
+        if (/\d{1,3}\s*%/.test(text)) {
+          // Exclude parent bars that hold multiple tabs
+          const matchCount = text.match(/\d{1,3}\s*%/g);
+          if (matchCount && matchCount.length === 1) {
+            candidateTabs.push(el);
+          }
         }
       }
     }
 
+    if (candidateTabs.length === 0) return null;
+
+    // In Quotex: Inactive tab = 1 SVG (Flag). Active tab = 3 or 4 SVGs (Flag + Chevron + Close + Pin)
     let bestTab = null;
-    let maxScore = -1;
+    let maxSvgs = 0;
 
-    for (const tab of tabCandidates) {
-      let score = 0;
-      const svgs = tab.querySelectorAll("svg");
-      score += svgs.length * 3;
-
-      if (tab.querySelector("button, [class*='close'], [class*='chevron'], [class*='arrow']")) {
-        score += 5;
+    for (const tab of candidateTabs) {
+      const svgs = tab.querySelectorAll("svg").length;
+      if (svgs > maxSvgs) {
+        maxSvgs = svgs;
+        bestTab = tab;
       }
+    }
 
-      const cls = (tab.className || "") + " " + (tab.getAttribute("aria-selected") || "");
-      if (/active|selected|current/i.test(cls)) {
-        score += 6;
-      }
-
-      if (score > maxScore) {
-        const name = parseCleanAssetName(tab.innerText || tab.textContent || "");
-        if (name) {
-          maxScore = score;
-          bestTab = name;
+    // Active tab must have at least 2 SVGs (it holds the close cross / chevron)
+    if (!bestTab || maxSvgs < 2) {
+      for (const tab of candidateTabs) {
+        const cls = (tab.className || "") + " " + (tab.getAttribute("aria-selected") || "");
+        if (/active|selected|current/i.test(cls)) {
+          bestTab = tab;
+          break;
         }
       }
     }
-    return bestTab;
+
+    if (!bestTab) return null;
+
+    // Check title attribute first
+    const titleAttr = bestTab.getAttribute("title") || bestTab.getAttribute("aria-label");
+    if (titleAttr && !titleAttr.includes("%") && titleAttr.length >= 3) {
+      const name = formatCleanName(titleAttr);
+      if (name) return name;
+    }
+
+    // Extract cleaned text from the chosen active tab
+    const clone = bestTab.cloneNode(true);
+    clone.querySelectorAll("button, svg").forEach(n => n.remove());
+    return formatCleanName(clone.innerText || clone.textContent);
   }
 
+  // Zero hardcoded fallbacks
   let activeAsset = getActiveTabFromDOM() || "Detecting...";
   let state = getVaultEntry(activeAsset);
 
-  // RETROACTIVE HISTORY HYDRATION (Binds cached candles by price scale)
+  // RETROACTIVE CANDLE HYDRATOR
   function tryHydrateCandles() {
     if (state.candles1m.length >= 20 || state.livePrice === null) return;
     for (const pkt of globalHistoryPool) {
@@ -120,7 +146,7 @@
 
   function switchAsset(newName) {
     if (!newName || newName === activeAsset || newName === "Detecting...") return;
-    console.log("[QX-Assistant] Switch active asset to:", newName);
+    console.log("[QX-Assistant] Confirmed active asset:", newName);
     activeAsset = newName;
     state = getVaultEntry(activeAsset);
 
@@ -129,14 +155,14 @@
     updateUI();
   }
 
-  // 1. UNIVERSAL CLICK CAPTURE (Catches clicks inside + modal AND top tab strip)
+  // 1. POINTERDOWN INTERCEPTOR (Top header and modal clicks)
   document.addEventListener("pointerdown", (e) => {
     if (e.target.closest("#qx-assistant-panel")) return;
     let el = e.target;
     for (let i = 0; i < 6 && el && el !== document.body; i++) {
       const text = el.innerText || el.textContent || "";
       if (/\d{1,3}\s*%/.test(text) || /\(OTC\)/i.test(text) || /[A-Z]{3}\/[A-Z]{3}/i.test(text)) {
-        const parsed = parseCleanAssetName(text);
+        const parsed = formatCleanName(text);
         if (parsed) {
           switchAsset(parsed);
           break;
@@ -146,7 +172,7 @@
     }
   }, true);
 
-  // 2. DOM MUTATION OBSERVER (Triggers when new tabs attach to DOM)
+  // 2. INSTANT MUTATION OBSERVER
   let observerDebounce = null;
   const observer = new MutationObserver(() => {
     clearTimeout(observerDebounce);
@@ -155,7 +181,7 @@
       if (found && found !== activeAsset) {
         switchAsset(found);
       }
-    }, 40);
+    }, 30);
   });
 
   observer.observe(document.documentElement, {
@@ -165,7 +191,6 @@
     attributeFilter: ["class", "aria-selected"]
   });
 
-  // Background interval backup
   setInterval(() => {
     const found = getActiveTabFromDOM();
     if (found && found !== activeAsset) {
@@ -192,7 +217,7 @@
 
     const minFloor = Math.floor(time / 60000) * 60000;
 
-    // Purge candles if an incompatible price scale slipped in
+    // Purge candles if an incompatible price scale from another asset slipped in
     if (state.candles1m.length > 0) {
       const last = state.candles1m[state.candles1m.length - 1];
       if (Math.abs(last.close - price) / price > 0.40) {
@@ -223,11 +248,10 @@
   function ingestHistory(candles, samplePrice) {
     if (!candles || candles.length === 0) return;
 
-    // Save into global pool
     globalHistoryPool.unshift({ candles: candles, samplePrice: samplePrice });
     if (globalHistoryPool.length > 25) globalHistoryPool.pop();
 
-    // Match to active asset if live price is within range
+    // Match to active asset if live price is within 25%
     if (state.livePrice !== null && Math.abs(samplePrice - state.livePrice) / state.livePrice <= 0.25) {
       state.candles1m = [...candles];
       saveVault();
@@ -303,7 +327,7 @@
       <div id="qx-panel-header">
         <div id="qx-panel-title">
           <span class="qx-badge">READ ONLY</span>
-          <strong>QX Assistant</strong> <small>v1.4.4</small>
+          <strong>QX Assistant</strong> <small>v1.4.5</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-refresh" title="Synchronize Tabs & History">[Sync]</button>
