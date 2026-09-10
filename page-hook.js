@@ -28,7 +28,7 @@
     return origFill.apply(this, arguments);
   };
 
-  // 2. WEBSOCKET CANDLE INGESTION & OUTGOING PAIR DETECTOR
+  // 2. WEBSOCKET CANDLE HISTORY PARSER
   function parseCandle(item) {
     if (!item) return null;
     if (typeof item === "object" && !Array.isArray(item)) {
@@ -96,7 +96,7 @@
         if (res) return res;
       }
     } else if (typeof data === "object") {
-      for (const k of ["candles", "history", "data", "quotes"]) {
+      for (const k of ["candles", "history", "data", "quotes", "bars"]) {
         if (data[k]) {
           const res = deepSearch(data[k], depth + 1);
           if (res) return res;
@@ -134,26 +134,11 @@
   const OrigWS = window.WebSocket;
   window.WebSocket = function (...args) {
     const ws = new OrigWS(...args);
-
     ws.addEventListener("message", (ev) => {
       if (typeof ev.data === "string") handleIncoming(ev.data);
       else if (ev.data instanceof Blob) ev.data.text().then(t => handleIncoming(t));
       else if (ev.data instanceof ArrayBuffer) handleIncoming(ev.data);
     });
-
-    // Strictly match currency pairs like USD_DZD_otc or NZD_JPY_otc on outgoing subscribe frames
-    const origSend = ws.send;
-    ws.send = function (data) {
-      if (typeof data === "string") {
-        const pairMatch = data.match(/\b([A-Z]{3})_([A-Z]{3})(_otc)?\b/i);
-        if (pairMatch) {
-          const formatted = `${pairMatch[1].toUpperCase()}/${pairMatch[2].toUpperCase()} (OTC)`;
-          window.postMessage({ type: "QX_WS_ASSET_DETECTED", payload: formatted }, "*");
-        }
-      }
-      return origSend.apply(this, arguments);
-    };
-
     return ws;
   };
   window.WebSocket.prototype = OrigWS.prototype;
