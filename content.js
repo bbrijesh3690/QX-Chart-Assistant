@@ -1,14 +1,8 @@
 ﻿/**
- * QX Chart Assistant - Content Script (v1.2.6-analysis)
- * Multi-timeframe strategy engine, tab-scoped sessionStorage, and instant history loader.
+ * QX Chart Assistant - Content Script (v1.2.7-analysis)
  */
 
 (function () {
-  const script = document.createElement('script');
-  script.src = chrome.runtime.getURL('page-hook.js');
-  script.onload = () => script.remove();
-  (document.head || document.documentElement).appendChild(script);
-
   const MAX_SESSION_ASSETS = 10;
   const sessionAssetMap = new Map();
 
@@ -99,7 +93,7 @@
     }
   }, 400);
 
-  function ingestHistoricalCandles(candles) {
+  function ingestHistoricalCandles(candles, source) {
     if (!candles || candles.length === 0) return;
     const existing = new Map();
     currentAsset.candles1m.forEach(c => existing.set(c.time, c));
@@ -247,9 +241,9 @@
   }
 
   let analysisState = {
-    warmupText: 'Scanning chart...',
+    warmupText: 'Scanning chart history...',
     m15: { trend: 'Neutral', support: null, resistance: null },
-    m5: { trend: 'Neutral', structure: 'Analyzing context' },
+    m5: { trend: 'Neutral', structure: 'Analyzing structure' },
     m1: { rsi: null, pattern: 'Neutral', ema8: null, ema20: null },
     setup: {
       type: 'Scanning...',
@@ -273,7 +267,7 @@
       return;
     }
 
-    analysisState.warmupText = `Analysis active: ${count1m} visible candles loaded`;
+    analysisState.warmupText = `Analysis active: ${count1m} candles loaded`;
 
     const rsi1m = calculateRSI(candles1m, 14);
     const ema8_1m = calculateEMA(candles1m, 8);
@@ -349,7 +343,7 @@
       <div id="qx-panel-header">
         <div id="qx-panel-title">
           <span class="qx-badge">READ ONLY</span>
-          <strong>QX Assistant</strong> <small>v1.2.6</small>
+          <strong>QX Assistant</strong> <small>v1.2.7</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-reset-pos" title="Reset Position">↺</button>
@@ -546,7 +540,7 @@
     const { type, payload } = ev.data;
 
     if (type === 'QX_HISTORICAL_CANDLES') {
-      ingestHistoricalCandles(payload.candles);
+      ingestHistoricalCandles(payload.candles, payload.source);
     } else if (type === 'QX_PRICE_UPDATE') {
       currentAsset.rawPriceText = payload.rawText;
       ingestPriceTick(payload.price, payload.timestamp, payload.textureId);

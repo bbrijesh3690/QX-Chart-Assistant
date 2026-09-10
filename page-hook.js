@@ -1,24 +1,26 @@
 ﻿/**
- * QX Chart Assistant - Page Context Hook (v1.2.6-analysis)
- * Eavesdrops on WebSocket historical candles & manages WebGL price texture stream.
+ * QX Chart Assistant - Page Context Hook (v1.2.7-analysis)
+ * Attached in MAIN world before Quotex boots.
  */
 
 (function () {
   if (window.__QX_PAGE_HOOK_INSTALLED__) return;
   window.__QX_PAGE_HOOK_INSTALLED__ = true;
 
+  console.log('[QX-Assistant] MAIN world hook initialized at document_start');
+
   // ==========================================
-  // 1. WEBSOCKET EAVESDROPPER (HISTORICAL CANDLES)
+  // 1. UNIVERSAL NETWORK CANDLE INTERCEPTOR
   // ==========================================
 
   function parseCandleItem(item) {
     if (!item) return null;
     if (typeof item === 'object' && !Array.isArray(item)) {
-      const t = item.time || item.timestamp || item.t;
-      const o = item.open !== undefined ? item.open : item.o;
-      const h = item.high !== undefined ? item.high : item.h;
-      const l = item.low !== undefined ? item.low : item.l;
-      const c = item.close !== undefined ? item.close : item.c;
+      const t = item.time ?? item.timestamp ?? item.t;
+      const o = item.open ?? item.o;
+      const h = item.high ?? item.h;
+      const l = item.low ?? item.l;
+      const c = item.close ?? item.c;
       if (t !== undefined && o !== undefined && c !== undefined) {
         const timeMs = t < 1e11 ? t * 1000 : t;
         const numO = parseFloat(o);
@@ -46,7 +48,7 @@
           open: vals[0],
           high: Math.max(...vals),
           low: Math.min(...vals),
-          close: parseFloat(item[4] || item[2])
+          close: parseFloat(item[4] ?? item[2])
         };
       }
     }
@@ -54,14 +56,14 @@
   }
 
   function extractCandleList(arr) {
-    if (!Array.isArray(arr) || arr.length < 15) return null;
+    if (!Array.isArray(arr) || arr.length < 10) return null;
     const parsed = [];
     for (let i = 0; i < arr.length; i++) {
       const c = parseCandleItem(arr[i]);
       if (c) parsed.push(c);
-      else if (parsed.length > 0 && parsed.length < 10) return null;
+      else if (parsed.length > 0 && parsed.length < 5) return null;
     }
-    if (parsed.length >= 15) {
+    if (parsed.length >= 10) {
       parsed.sort((a, b) => a.time - b.time);
       return parsed;
     }
@@ -69,7 +71,7 @@
   }
 
   function searchForCandles(data, depth = 0) {
-    if (!data || depth > 4) return null;
+    if (!data || depth > 5) return null;
     if (Array.isArray(data)) {
       const direct = extractCandleList(data);
       if (direct) return direct;
@@ -78,7 +80,7 @@
         if (nested) return nested;
       }
     } else if (typeof data === 'object') {
-      const priorityKeys = ['candles', 'history', 'data', 'quotes', 'history_line'];
+      const priorityKeys = ['candles', 'history', 'data', 'quotes', 'history_line', 'bars'];
       for (const k of priorityKeys) {
         if (data[k]) {
           const res = searchForCandles(data[k], depth + 1);
@@ -95,33 +97,78 @@
     return null;
   }
 
-  function processIncomingMessage(raw) {
-    if (typeof raw !== 'string') return;
-    let jsonStr = raw;
-    if (raw.startsWith('42')) {
-      jsonStr = raw.substring(2);
-    }
+  function inspectPayload(payload, source) {
     try {
-      const parsed = JSON.parse(jsonStr);
-      const candles = searchForCandles(parsed);
-      if (candles && candles.length >= 15) {
+      let data = payload;
+      if (typeof payload === 'string') {
+        if (payload.startsWith('42')) {
+          payload = payload.substring(2);
+        }
+        data = JSON.parse(payload);
+      }
+      const candles = searchForCandles(data);
+      if (candles && candles.length >= 10) {
+        console.log(`[QX-Assistant] Intercepted ${candles.length} historical candles from ${source}!`);
         window.postMessage({
           type: 'QX_HISTORICAL_CANDLES',
-          payload: { candles: candles }
+          payload: { candles: candles, source: source }
         }, '*');
       }
     } catch (_) {}
   }
 
+  // Hook WebSocket
   const OriginalWebSocket = window.WebSocket;
   window.WebSocket = function (...args) {
     const ws = new OriginalWebSocket(...args);
+    console.log('[QX-Assistant] WebSocket connected to:', args[0]);
+
     ws.addEventListener('message', (ev) => {
-      try { processIncomingMessage(ev.data); } catch (_) {}
+      if (typeof ev.data === 'string') {
+        inspectPayload(ev.data, 'WebSocket (Text)');
+      } else if (ev.data instanceof Blob) {
+        ev.data.text().then(txt => inspectPayload(txt, 'WebSocket (Blob)'));
+      } else if (ev.data instanceof ArrayBuffer) {
+        try {
+          const decoded = new TextDecoder().decode(ev.data);
+          inspectPayload(decoded, 'WebSocket (ArrayBuffer)');
+        } catch (_) {}
+      }
     });
+
     return ws;
   };
   window.WebSocket.prototype = OriginalWebSocket.prototype;
+
+  // Hook Fetch
+  const origFetch = window.fetch;
+  window.fetch = async function (...args) {
+    const response = await origFetch.apply(this, args);
+    try {
+      const clone = response.clone();
+      clone.json().then(data => inspectPayload(data, 'Fetch'));
+    } catch (_) {}
+    return response;
+  };
+
+  // Hook XMLHttpRequest
+  const origXhrOpen = XMLHttpRequest.prototype.open;
+  const origXhrSend = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open = function () {
+    return origXhrOpen.apply(this, arguments);
+  };
+  XMLHttpRequest.prototype.send = function () {
+    this.addEventListener('load', () => {
+      try {
+        if (this.responseType === '' || this.responseType === 'text') {
+          inspectPayload(this.responseText, 'XHR');
+        } else if (this.responseType === 'json') {
+          inspectPayload(this.response, 'XHR');
+        }
+      } catch (_) {}
+    });
+    return origXhrSend.apply(this, arguments);
+  };
 
   // ==========================================
   // 2. WEBGL TEXTURE ENGINE (LIVE PRICE STREAM)
@@ -201,7 +248,6 @@
         candidate.lastSeen = priceRecord.timestamp;
       }
 
-      // Auto-lock onto active price texture
       if (!manualLock) {
         if (!activeTextureId && candidate.changes >= 2) {
           activeTextureId = texUid;
@@ -279,7 +325,6 @@
   window.addEventListener('message', (ev) => {
     if (!ev.data || typeof ev.data !== 'object') return;
     const { type, payload } = ev.data;
-
     if (type === 'QX_CMD_SELECT_TEXTURE') {
       activeTextureId = payload.textureId;
       manualLock = true;
