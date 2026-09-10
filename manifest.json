@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.4.2",
-  "description": "Read-only multi-timeframe assistant with bulletproof asset title isolation.",
+  "version": "1.4.3",
+  "description": "Read-only assistant with self-healing history cache and instant DOM mutation observer.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",
