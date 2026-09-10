@@ -2,11 +2,12 @@
   if (window.__QX_PAGE_HOOK__) return;
   window.__QX_PAGE_HOOK__ = true;
 
-  // 1. FAST 60FPS PRICE PASS-THROUGH
+  let lastInterception = null;
   let lastPrice = null;
   let lastTime = 0;
-  const origFill = CanvasRenderingContext2D.prototype.fillText;
 
+  // 1. FAST 60FPS CANVAS PRICE EMITTER
+  const origFill = CanvasRenderingContext2D.prototype.fillText;
   CanvasRenderingContext2D.prototype.fillText = function (text, x, y, maxW) {
     if (typeof text === "string") {
       const clean = text.trim();
@@ -28,7 +29,7 @@
     return origFill.apply(this, arguments);
   };
 
-  // 2. WEBSOCKET CANDLE PARSER
+  // 2. WEBSOCKET CANDLE PARSER & MEMORY REPLAYER
   function parseCandle(item) {
     if (!item) return null;
     if (typeof item === "object" && !Array.isArray(item)) {
@@ -127,9 +128,10 @@
       const candles = deepSearch(parsed);
       if (candles && candles.length >= 8) {
         const samplePrice = candles[candles.length - 1].close;
+        lastInterception = { candles: candles, samplePrice: samplePrice };
         window.postMessage({
           type: "QX_HISTORICAL_CANDLES",
-          payload: { candles: candles, samplePrice: samplePrice }
+          payload: lastInterception
         }, "*");
       }
     } catch (_) {}
@@ -146,4 +148,14 @@
     return ws;
   };
   window.WebSocket.prototype = OrigWS.prototype;
+
+  // Listen for manual user refresh to replay cached candle history
+  window.addEventListener("message", (e) => {
+    if (e.data?.type === "QX_REQ_REPLAY" && lastInterception) {
+      window.postMessage({
+        type: "QX_HISTORICAL_CANDLES",
+        payload: lastInterception
+      }, "*");
+    }
+  });
 })();

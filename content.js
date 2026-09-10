@@ -1,14 +1,11 @@
 (function () {
-  // Isolated multi-asset vault: key -> { candles1m, currentCandle, livePrice, lastActive }
   const assetVault = new Map();
+  let pendingCandles = null;
 
   function loadVault() {
     try {
       const raw = sessionStorage.getItem("__QX_ASSET_VAULT__");
-      if (raw) {
-        const entries = JSON.parse(raw);
-        entries.forEach(([k, v]) => assetVault.set(k, v));
-      }
+      if (raw) JSON.parse(raw).forEach(([k, v]) => assetVault.set(k, v));
     } catch (_) {}
   }
 
@@ -34,7 +31,7 @@
     return assetVault.get(name);
   }
 
-  function parseAssetString(str) {
+  function cleanAsset(str) {
     if (!str || typeof str !== "string") return null;
     let s = str.replace(/\b\d{1,3}%\b/g, "").replace(/[\n\r\t]/g, " ").trim();
     if (/^(settings|store|tick|live|demo|trade|chart|deposit|pair information)$/i.test(s)) return null;
@@ -50,16 +47,16 @@
   }
 
   // ==========================================
-  // BULLETPROOF TAB DETECTION BY PAYOUT BADGE
+  // RELATIVE SCREEN TOP SCANNER
   // ==========================================
   function detectActiveTab() {
-    // Every Quotex tab contains a payout percentage like 85%, 93%, 88%
+    const maxY = Math.max(120, window.innerHeight * 0.15);
     const elements = Array.from(document.querySelectorAll("*")).filter(el => {
       if (el.closest("#qx-assistant-panel")) return false;
       const r = el.getBoundingClientRect();
-      if (r.top < 0 || r.top > 80 || r.width < 50 || r.width > 300) return false;
+      if (r.top < 0 || r.top > maxY || r.width < 40 || r.width > 350) return false;
       const text = el.innerText || el.textContent || "";
-      return /\b\d{1,3}%\b/.test(text);
+      return /\(OTC\)|[A-Z]{3}\/[A-Z]{3}/i.test(text);
     });
 
     let bestAsset = null;
@@ -67,16 +64,17 @@
 
     for (const el of elements) {
       const text = el.innerText || el.textContent || "";
-      const asset = parseAssetString(text);
+      const asset = cleanAsset(text);
       if (!asset) continue;
 
       const svgs = el.querySelectorAll("svg");
       const hasClose = el.querySelector("[class*='close'], svg path[d*='M']");
-      const isActiveClass = /(active|selected|current)/i.test(el.className || "");
+      const isActive = /(active|selected|current)/i.test(el.className || "");
 
+      // In Quotex, the active tab has 3 SVGs (flag + chevron + close button)
       let score = svgs.length;
       if (hasClose) score += 3;
-      if (isActiveClass) score += 5;
+      if (isActive) score += 4;
 
       if (score > maxScore) {
         maxScore = score;
@@ -94,24 +92,28 @@
     if (!newName || newName === activeAsset || newName === "Detecting...") return;
     activeAsset = newName;
     state = getVaultEntry(activeAsset);
+
+    // Drain pending candle buffer if one was waiting
+    if (pendingCandles && pendingCandles.length > 0) {
+      ingestHistory(pendingCandles, pendingCandles[pendingCandles.length - 1].close);
+      pendingCandles = null;
+    }
+
     saveVault();
     updateUI();
   }
 
-  // Capture clicks directly on tabs
+  // Instant capture on user click
   document.addEventListener("pointerdown", (e) => {
     if (e.target.closest("#qx-assistant-panel")) return;
     let el = e.target;
     for (let i = 0; i < 5 && el && el !== document.body; i++) {
       const r = el.getBoundingClientRect();
-      if (r.top >= 0 && r.top <= 80 && r.width <= 300) {
-        const text = el.innerText || el.textContent || "";
-        if (/\b\d{1,3}%\b/.test(text)) {
-          const asset = parseAssetString(text);
-          if (asset) {
-            switchAsset(asset);
-            break;
-          }
+      if (r.top >= 0 && r.top <= 140) {
+        const asset = cleanAsset(el.innerText || el.textContent || "");
+        if (asset) {
+          switchAsset(asset);
+          break;
         }
       }
       el = el.parentElement;
@@ -126,18 +128,13 @@
   }, 400);
 
   // ==========================================
-  // DYNAMIC PRICE & CANDLE INGESTION
+  // NON-BLOCKING PRICE & HISTORY PIPELINE
   // ==========================================
   function ingestFastTick(price, time) {
+    // If asset is still detecting, auto-detect on the fly
     if (activeAsset === "Detecting...") {
-      const detected = detectActiveTab();
-      if (detected) switchAsset(detected);
-      else return;
-    }
-
-    // Ignore ticks that deviate wildly from the current asset's price range during tab transitions
-    if (state.livePrice !== null && Math.abs(price - state.livePrice) / state.livePrice > 0.4) {
-      return;
+      const found = detectActiveTab();
+      if (found) switchAsset(found);
     }
 
     state.livePrice = price;
@@ -164,7 +161,13 @@
   function ingestHistory(candles, samplePrice) {
     if (!candles || candles.length === 0) return;
 
-    // Route history to whichever asset in the vault matches this price magnitude
+    if (activeAsset === "Detecting...") {
+      pendingCandles = candles;
+      const found = detectActiveTab();
+      if (found) switchAsset(found);
+      return;
+    }
+
     let targetAsset = activeAsset;
     if (state.livePrice !== null && Math.abs(samplePrice - state.livePrice) / state.livePrice > 0.3) {
       targetAsset = null;
@@ -176,7 +179,10 @@
       }
     }
 
-    if (!targetAsset || targetAsset === "Detecting...") return;
+    if (!targetAsset || targetAsset === "Detecting...") {
+      pendingCandles = candles;
+      return;
+    }
 
     const targetState = getVaultEntry(targetAsset);
     const map = new Map();
@@ -239,7 +245,7 @@
   }
 
   // ==========================================
-  // DRAGGABLE UI SETUP
+  // DRAGGABLE UI SETUP WITH REFRESH BUTTON
   // ==========================================
   function mountUI() {
     if (document.getElementById("qx-assistant-panel")) return;
@@ -251,9 +257,10 @@
       <div id="qx-panel-header">
         <div id="qx-panel-title">
           <span class="qx-badge">READ ONLY</span>
-          <strong>QX Assistant</strong> <small>v1.3.7</small>
+          <strong>QX Assistant</strong> <small>v1.3.8</small>
         </div>
         <div id="qx-panel-controls">
+          <button id="qx-btn-refresh" title="Force Refresh Data & Rescan Tab">[↻]</button>
           <button id="qx-btn-reset-pos" title="Reset Position">[R]</button>
           <button id="qx-btn-min" title="Minimize">[-]</button>
         </div>
@@ -309,6 +316,7 @@
       } catch (_) {}
     }
 
+    // Drag-and-drop mechanics
     const header = panel.querySelector("#qx-panel-header");
     let isDragging = false;
     let dragOffset = { x: 0, y: 0 };
@@ -340,6 +348,22 @@
 
       document.addEventListener("mousemove", onMouseMove);
       document.addEventListener("mouseup", onMouseUp);
+    });
+
+    // REFRESH BUTTON HANDLER
+    const btnRefresh = document.getElementById("qx-btn-refresh");
+    btnRefresh.addEventListener("click", () => {
+      btnRefresh.textContent = "[...]";
+      const found = detectActiveTab();
+      if (found) {
+        switchAsset(found);
+      }
+      // Trigger WebSocket history replay from page-hook
+      window.postMessage({ type: "QX_REQ_REPLAY" }, "*");
+      setTimeout(() => {
+        btnRefresh.textContent = "[↻]";
+        updateUI();
+      }, 350);
     });
 
     const btnMin = document.getElementById("qx-btn-min");

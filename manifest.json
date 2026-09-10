@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.3.7",
-  "description": "Read-only multi-timeframe assistant with isolated multi-asset candle vaults and payout tab detection.",
+  "version": "1.3.8",
+  "description": "Read-only assistant with manual refresh trigger, non-blocking ticks, and pending history buffer.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",
