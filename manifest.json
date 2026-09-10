@@ -1,20 +1,26 @@
-﻿{
+{
   "manifest_version": 3,
-  "name": "QX Chart Assistant (Instant History)",
-  "version": "1.2.7",
-  "description": "Read-only multi-timeframe analysis assistant with guaranteed MAIN-world startup hook.",
-  "permissions": [
-    "storage"
-  ],
+  "name": "QX Chart Assistant",
+  "version": "1.3.0",
+  "description": "Read-only multi-timeframe assistant with draggable panel and dynamic asset switching.",
+  "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",
-    "*://*.qxbroker.com/*"
+    "*://*.qxbroker.com/*",
+    "*://*.qxplus.com/*",
+    "*://*.market-qx.pro/*",
+    "*://*.broker-qx.pro/*",
+    "*://*.quotex-market.com/*"
   ],
   "content_scripts": [
     {
       "matches": [
         "*://*.quotex.com/*",
-        "*://*.qxbroker.com/*"
+        "*://*.qxbroker.com/*",
+        "*://*.qxplus.com/*",
+        "*://*.market-qx.pro/*",
+        "*://*.broker-qx.pro/*",
+        "*://*.quotex-market.com/*"
       ],
       "js": ["page-hook.js"],
       "run_at": "document_start",
@@ -23,7 +29,11 @@
     {
       "matches": [
         "*://*.quotex.com/*",
-        "*://*.qxbroker.com/*"
+        "*://*.qxbroker.com/*",
+        "*://*.qxplus.com/*",
+        "*://*.market-qx.pro/*",
+        "*://*.broker-qx.pro/*",
+        "*://*.quotex-market.com/*"
       ],
       "js": ["content.js"],
       "css": ["styles.css"],
