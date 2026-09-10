@@ -1,0 +1,33 @@
+﻿{
+  "manifest_version": 3,
+  "name": "QX Chart Assistant (Multi-Timeframe Analysis)",
+  "version": "1.2.6",
+  "description": "Read-only multi-timeframe analysis assistant with instant historical candle ingestion and session-only persistence.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "*://*.quotex.com/*",
+    "*://*.qxbroker.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.quotex.com/*",
+        "*://*.qxbroker.com/*"
+      ],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["page-hook.js"],
+      "matches": [
+        "*://*.quotex.com/*",
+        "*://*.qxbroker.com/*"
+      ]
+    }
+  ]
+}
