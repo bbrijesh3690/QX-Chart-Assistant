@@ -1,5 +1,4 @@
 (function () {
-  // Session storage persistence across page reloads (F5)
   const sessionAssetMap = new Map();
 
   function loadCache() {
@@ -32,12 +31,11 @@
   }
 
   // ==========================================
-  // DYNAMIC ASSET DETECTOR (TABS + CURRENCIES + CRYPTO)
+  // PRECISE ACTIVE TAB DETECTION (BASED ON CLOSE 'X' & CHEVRON)
   // ==========================================
-  function cleanAssetName(str) {
+  function parseCleanName(str) {
     if (!str) return null;
     let clean = str.replace(/[\n\r\t]/g, " ").replace(/\d+%/g, "").trim();
-    // Match currency pairs (EUR/USD OTC) or single-word assets (Cosmos (OTC), Bitcoin, etc.)
     const m = clean.match(/([A-Za-z0-9\/\-\s]+(\(OTC\)|OTC)?)/i);
     if (m && m[0].trim().length >= 3) {
       const res = m[0].trim();
@@ -47,43 +45,49 @@
   }
 
   function detectActiveAsset() {
-    // 1. Search Quotex active tabs with broad wildcard selectors
-    const tabCandidates = document.querySelectorAll(
-      "[class*='tab'][class*='active'], [class*='tab--active'], [class*='tabs__item--active'], [class*='tabs__item'][class*='active'], [aria-selected='true']"
+    // 1. Only the active Quotex tab has the close button (x)
+    const closeButtons = document.querySelectorAll(
+      "button[class*='close'], svg[class*='close'], [class*='tab__close'], [class*='tab-close']"
     );
-    for (const el of tabCandidates) {
-      const clone = el.cloneNode(true);
-      clone.querySelectorAll("svg, button, [class*='close'], [class*='percent'], [class*='payout']").forEach(n => n.remove());
-      const name = cleanAssetName(clone.textContent);
-      if (name) return name;
-    }
-
-    // 2. Check all open tabs in top bar
-    const allTabs = document.querySelectorAll("[class*='tabs__item'], [class*='tab-item'], [class*='tab_item']");
-    for (const el of allTabs) {
-      if (el.classList.toString().includes("active") || el.getAttribute("aria-selected") === "true") {
-        const clone = el.cloneNode(true);
-        clone.querySelectorAll("svg, button, [class*='close'], [class*='percent']").forEach(n => n.remove());
-        const name = cleanAssetName(clone.textContent);
+    for (const btn of closeButtons) {
+      const parentTab = btn.closest("[class*='tab'], [class*='item']");
+      if (parentTab) {
+        const clone = parentTab.cloneNode(true);
+        clone.querySelectorAll("button, svg, [class*='close'], [class*='payout'], [class*='percent']").forEach(n => n.remove());
+        const name = parseCleanName(clone.textContent);
         if (name) return name;
       }
     }
 
-    // 3. Fallback to asset selector / title
-    const sel = document.querySelector("[class*='asset-select'], [class*='current-asset']");
-    if (sel) {
-      const name = cleanAssetName(sel.textContent);
+    // 2. Active tab with chevron/arrow
+    const dropdownIcons = document.querySelectorAll("[class*='arrow'], [class*='chevron']");
+    for (const icon of dropdownIcons) {
+      const parentTab = icon.closest("[class*='tab'], [class*='item']");
+      if (parentTab) {
+        const clone = parentTab.cloneNode(true);
+        clone.querySelectorAll("button, svg, [class*='payout'], [class*='percent']").forEach(n => n.remove());
+        const name = parseCleanName(clone.textContent);
+        if (name) return name;
+      }
+    }
+
+    // 3. Elements with active class
+    const activeTabs = document.querySelectorAll("[class*='tab'][class*='active'], [class*='tab--active'], [class*='is-active']");
+    for (const tab of activeTabs) {
+      const clone = tab.cloneNode(true);
+      clone.querySelectorAll("button, svg, [class*='close'], [class*='payout'], [class*='percent']").forEach(n => n.remove());
+      const name = parseCleanName(clone.textContent);
       if (name) return name;
     }
 
-    return "USD/BDT (OTC)";
+    return null;
   }
 
-  let activeAsset = detectActiveAsset();
+  let activeAsset = detectActiveAsset() || "USD/BRL (OTC)";
   let state = getAssetState(activeAsset);
 
   function switchAsset(newAsset) {
-    if (newAsset === activeAsset) return;
+    if (!newAsset || newAsset === activeAsset) return;
     activeAsset = newAsset;
     state = getAssetState(activeAsset);
     window.postMessage({ type: "QX_RESET_LOCK" }, "*");
@@ -91,10 +95,9 @@
     updateUI();
   }
 
-  // Check on click (instant) + interval (continuous)
   document.addEventListener("click", () => {
-    setTimeout(() => switchAsset(detectActiveAsset()), 80);
-    setTimeout(() => switchAsset(detectActiveAsset()), 400);
+    setTimeout(() => switchAsset(detectActiveAsset()), 100);
+    setTimeout(() => switchAsset(detectActiveAsset()), 350);
   });
 
   setInterval(() => {
@@ -102,9 +105,8 @@
     if (detected && detected !== activeAsset) {
       switchAsset(detected);
     }
-  }, 600);
+  }, 500);
 
-  // Ingest WebSocket historical candles
   function ingestHistory(candles) {
     if (!candles || candles.length === 0) return;
     const map = new Map();
@@ -116,7 +118,6 @@
     updateUI();
   }
 
-  // Ingest live price ticks
   function ingestTick(price, time) {
     state.livePrice = price;
     const minFloor = Math.floor(time / 60000) * 60000;
@@ -184,7 +185,7 @@
   }
 
   // ==========================================
-  // UI MOUNT & DRAGGING LOGIC
+  // DRAGGABLE UI COMPONENT
   // ==========================================
   function mountUI() {
     if (document.getElementById("qx-assistant-panel")) return;
@@ -196,7 +197,7 @@
       <div id="qx-panel-header">
         <div id="qx-panel-title">
           <span class="qx-badge">READ ONLY</span>
-          <strong>QX Assistant</strong> <small>v1.3.0</small>
+          <strong>QX Assistant</strong> <small>v1.3.1</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-reset-pos" title="Reset Position">[R]</button>
@@ -244,7 +245,6 @@
     `;
     document.body.appendChild(panel);
 
-    // Position memory restore
     const savedPos = localStorage.getItem("__qx_panel_pos__");
     if (savedPos) {
       try {
@@ -255,7 +255,6 @@
       } catch (_) {}
     }
 
-    // Drag-and-drop mechanics
     const header = panel.querySelector("#qx-panel-header");
     let isDragging = false;
     let dragOffset = { x: 0, y: 0 };
@@ -289,7 +288,6 @@
       document.addEventListener("mouseup", onMouseUp);
     });
 
-    // Button controls
     const btnMin = document.getElementById("qx-btn-min");
     const bodyEl = document.getElementById("qx-panel-body");
     btnMin.addEventListener("click", () => {
