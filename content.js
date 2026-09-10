@@ -19,13 +19,15 @@
 
   function getVaultEntry(name) {
     if (!name || name === "Detecting...") {
-      return { candles1m: [], currentCandle: null, livePrice: null };
+      return { candles1m: [], currentCandle: null, livePrice: null, rawPrice: null, decimals: 5 };
     }
     if (!assetVault.has(name)) {
       assetVault.set(name, {
         candles1m: [],
         currentCandle: null,
-        livePrice: null
+        livePrice: null,
+        rawPrice: null,
+        decimals: 5
       });
     }
     return assetVault.get(name);
@@ -46,9 +48,6 @@
     return null;
   }
 
-  // ==========================================
-  // RELATIVE SCREEN TOP SCANNER
-  // ==========================================
   function detectActiveTab() {
     const maxY = Math.max(120, window.innerHeight * 0.15);
     const elements = Array.from(document.querySelectorAll("*")).filter(el => {
@@ -71,7 +70,6 @@
       const hasClose = el.querySelector("[class*='close'], svg path[d*='M']");
       const isActive = /(active|selected|current)/i.test(el.className || "");
 
-      // In Quotex, the active tab has 3 SVGs (flag + chevron + close button)
       let score = svgs.length;
       if (hasClose) score += 3;
       if (isActive) score += 4;
@@ -81,7 +79,6 @@
         bestAsset = asset;
       }
     }
-
     return maxScore >= 1 ? bestAsset : null;
   }
 
@@ -93,7 +90,6 @@
     activeAsset = newName;
     state = getVaultEntry(activeAsset);
 
-    // Drain pending candle buffer if one was waiting
     if (pendingCandles && pendingCandles.length > 0) {
       ingestHistory(pendingCandles, pendingCandles[pendingCandles.length - 1].close);
       pendingCandles = null;
@@ -103,7 +99,6 @@
     updateUI();
   }
 
-  // Instant capture on user click
   document.addEventListener("pointerdown", (e) => {
     if (e.target.closest("#qx-assistant-panel")) return;
     let el = e.target;
@@ -128,16 +123,18 @@
   }, 400);
 
   // ==========================================
-  // NON-BLOCKING PRICE & HISTORY PIPELINE
+  // FAST PRICE & NATIVE PRECISION SYNC
   // ==========================================
-  function ingestFastTick(price, time) {
-    // If asset is still detecting, auto-detect on the fly
+  function ingestFastTick(price, rawText, decimals, time) {
     if (activeAsset === "Detecting...") {
       const found = detectActiveTab();
       if (found) switchAsset(found);
     }
 
     state.livePrice = price;
+    state.rawPrice = rawText;
+    if (decimals) state.decimals = decimals;
+
     const minFloor = Math.floor(time / 60000) * 60000;
 
     if (!state.currentCandle) {
@@ -154,7 +151,7 @@
     }
 
     const priceEl = document.getElementById("qx-ui-price");
-    if (priceEl) priceEl.textContent = price.toFixed(5);
+    if (priceEl) priceEl.textContent = state.rawPrice || price.toFixed(state.decimals);
     updateAnalysis();
   }
 
@@ -244,9 +241,6 @@
     };
   }
 
-  // ==========================================
-  // DRAGGABLE UI SETUP WITH REFRESH BUTTON
-  // ==========================================
   function mountUI() {
     if (document.getElementById("qx-assistant-panel")) return;
     if (!document.body) return;
@@ -257,10 +251,10 @@
       <div id="qx-panel-header">
         <div id="qx-panel-title">
           <span class="qx-badge">READ ONLY</span>
-          <strong>QX Assistant</strong> <small>v1.3.8</small>
+          <strong>QX Assistant</strong> <small>v1.3.9</small>
         </div>
         <div id="qx-panel-controls">
-          <button id="qx-btn-refresh" title="Force Refresh Data & Rescan Tab">[↻]</button>
+          <button id="qx-btn-refresh" title="Synchronize Tabs & History">[Sync]</button>
           <button id="qx-btn-reset-pos" title="Reset Position">[R]</button>
           <button id="qx-btn-min" title="Minimize">[-]</button>
         </div>
@@ -316,7 +310,6 @@
       } catch (_) {}
     }
 
-    // Drag-and-drop mechanics
     const header = panel.querySelector("#qx-panel-header");
     let isDragging = false;
     let dragOffset = { x: 0, y: 0 };
@@ -350,20 +343,16 @@
       document.addEventListener("mouseup", onMouseUp);
     });
 
-    // REFRESH BUTTON HANDLER
     const btnRefresh = document.getElementById("qx-btn-refresh");
     btnRefresh.addEventListener("click", () => {
       btnRefresh.textContent = "[...]";
       const found = detectActiveTab();
-      if (found) {
-        switchAsset(found);
-      }
-      // Trigger WebSocket history replay from page-hook
+      if (found) switchAsset(found);
       window.postMessage({ type: "QX_REQ_REPLAY" }, "*");
       setTimeout(() => {
-        btnRefresh.textContent = "[↻]";
+        btnRefresh.textContent = "[Sync]";
         updateUI();
-      }, 350);
+      }, 300);
     });
 
     const btnMin = document.getElementById("qx-btn-min");
@@ -395,6 +384,7 @@
   }, 400);
 
   function updateAnalysis() {
+    const dec = state.decimals || 3;
     const m1List = [...state.candles1m];
     if (state.currentCandle) m1List.push(state.currentCandle);
     const m5List = getAggregate(state.candles1m, state.currentCandle, 5);
@@ -414,7 +404,9 @@
     if (rsiEl) rsiEl.textContent = rsi !== null ? rsi.toFixed(1) : "--";
 
     const m15El = document.getElementById("qx-ui-15m");
-    if (m15El) m15El.textContent = sr.s && sr.r ? `S: ${sr.s.toFixed(4)} | R: ${sr.r.toFixed(4)}` : "Accumulating";
+    if (m15El) {
+      m15El.textContent = sr.s && sr.r ? `S: ${sr.s.toFixed(dec)} | R: ${sr.r.toFixed(dec)}` : "Accumulating";
+    }
 
     const m5El = document.getElementById("qx-ui-5m");
     if (m5El) m5El.textContent = m5List.length >= 2 ? (m5List[m5List.length - 1].close > m5List[0].close ? "Bullish" : "Bearish") : "Neutral";
@@ -424,16 +416,16 @@
     const assetEl = document.getElementById("qx-ui-asset");
     if (assetEl) assetEl.textContent = activeAsset;
 
-    if (state.livePrice !== null) {
-      const priceEl = document.getElementById("qx-ui-price");
-      if (priceEl) priceEl.textContent = state.livePrice.toFixed(5);
+    const priceEl = document.getElementById("qx-ui-price");
+    if (priceEl && (state.rawPrice || state.livePrice !== null)) {
+      priceEl.textContent = state.rawPrice || state.livePrice.toFixed(state.decimals || 5);
     }
     updateAnalysis();
   }
 
   window.addEventListener("message", (e) => {
     if (e.data?.type === "QX_FAST_PRICE_TICK") {
-      ingestFastTick(e.data.payload.price, e.data.payload.timestamp);
+      ingestFastTick(e.data.payload.price, e.data.payload.rawText, e.data.payload.decimals, e.data.payload.timestamp);
     } else if (e.data?.type === "QX_HISTORICAL_CANDLES") {
       ingestHistory(e.data.payload.candles, e.data.payload.samplePrice);
     }

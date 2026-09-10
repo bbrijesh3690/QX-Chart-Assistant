@@ -6,7 +6,7 @@
   let lastPrice = null;
   let lastTime = 0;
 
-  // 1. FAST 60FPS CANVAS PRICE EMITTER
+  // 1. FAST 60FPS PRICE PASS-THROUGH WITH NATIVE PRECISION
   const origFill = CanvasRenderingContext2D.prototype.fillText;
   CanvasRenderingContext2D.prototype.fillText = function (text, x, y, maxW) {
     if (typeof text === "string") {
@@ -18,9 +18,10 @@
           if (val !== lastPrice || (now - lastTime > 200)) {
             lastPrice = val;
             lastTime = now;
+            const decimals = clean.includes(".") ? clean.split(".")[1].length : 2;
             window.postMessage({
               type: "QX_FAST_PRICE_TICK",
-              payload: { price: val, timestamp: now }
+              payload: { price: val, rawText: clean, decimals: decimals, timestamp: now }
             }, "*");
           }
         }
@@ -29,7 +30,7 @@
     return origFill.apply(this, arguments);
   };
 
-  // 2. WEBSOCKET CANDLE PARSER & MEMORY REPLAYER
+  // 2. WEBSOCKET CANDLE PARSER
   function parseCandle(item) {
     if (!item) return null;
     if (typeof item === "object" && !Array.isArray(item)) {
@@ -149,7 +150,6 @@
   };
   window.WebSocket.prototype = OrigWS.prototype;
 
-  // Listen for manual user refresh to replay cached candle history
   window.addEventListener("message", (e) => {
     if (e.data?.type === "QX_REQ_REPLAY" && lastInterception) {
       window.postMessage({
