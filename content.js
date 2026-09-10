@@ -1,11 +1,12 @@
 (function () {
-  // Purge legacy storage keys from earlier versions
+  // Purge all stale legacy cache entries from storage
   try {
     sessionStorage.removeItem("__QX_SESSION_CACHE__");
     sessionStorage.removeItem("__QX_ASSET_VAULT__");
+    sessionStorage.removeItem("__QX_ASSET_VAULT_V3__");
   } catch (_) {}
 
-  const VAULT_KEY = "__QX_ASSET_VAULT_V3__";
+  const VAULT_KEY = "__QX_ASSET_VAULT_V4__";
   const assetVault = new Map();
   const globalHistoryPool = [];
 
@@ -40,9 +41,16 @@
     return assetVault.get(name);
   }
 
-  // ROBUST SANITIZER FOR ANY ASSET CLASS
+  // ROBUST SANITIZER WITH CONTAINER REJECTION
   function formatCleanName(raw) {
     if (!raw || typeof raw !== "string") return null;
+
+    // REJECT MULTI-TAB CONTAINERS
+    const p = raw.match(/\d{1,3}\s*%/g);
+    if (p && p.length > 1) return null;
+    const pairs = raw.match(/[A-Z]{3}\/[A-Z]{3}/gi);
+    if (pairs && pairs.length > 1) return null;
+
     let s = raw.replace(/\d{1,3}\s*%/g, "").trim();
     s = s.replace(/PAIR INFORMATION/gi, "").replace(/BEGINNING OF TRADE/gi, "").trim();
     s = s.replace(/[\r\n\t]+/g, " ");
@@ -66,72 +74,64 @@
     return null;
   }
 
-  // DETERMINISTIC ACTIVE TAB FINDER (1 vs 3+ SVG RULE)
+  // ACTIVE-STATE DETERMINISTIC TAB FINDER (Never uses raw SVG counts)
   function getActiveTabFromDOM() {
-    const candidateTabs = [];
-    const elements = document.querySelectorAll("*");
-
-    for (const el of elements) {
-      if (el.closest("#qx-assistant-panel")) continue;
+    const candidateTabs = Array.from(document.querySelectorAll("*")).filter(el => {
+      if (el.closest("#qx-assistant-panel")) return false;
       const r = el.getBoundingClientRect();
-      // Tabs sit in top 75px, width 55px to 320px, height 22px to 60px
-      if (r.top >= 0 && r.top <= 75 && r.height >= 22 && r.height <= 60 && r.width >= 55 && r.width <= 320) {
-        const text = el.innerText || el.textContent || "";
-        if (/\d{1,3}\s*%/.test(text)) {
-          // Exclude parent bars that hold multiple tabs
-          const matchCount = text.match(/\d{1,3}\s*%/g);
-          if (matchCount && matchCount.length === 1) {
-            candidateTabs.push(el);
-          }
-        }
-      }
-    }
+      if (r.top < 0 || r.top > 75 || r.height < 20 || r.height > 60 || r.width < 45 || r.width > 300) return false;
+      const text = el.innerText || el.textContent || "";
+      const p = text.match(/\d{1,3}\s*%/g);
+      return p && p.length === 1; // Strict: Exactly one tab element
+    });
 
     if (candidateTabs.length === 0) return null;
 
-    // In Quotex: Inactive tab = 1 SVG (Flag). Active tab = 3 or 4 SVGs (Flag + Chevron + Close + Pin)
     let bestTab = null;
-    let maxSvgs = 0;
+    let highestScore = -1;
 
     for (const tab of candidateTabs) {
-      const svgs = tab.querySelectorAll("svg").length;
-      if (svgs > maxSvgs) {
-        maxSvgs = svgs;
+      let score = 0;
+      const cls = (tab.className || "") + " " + (tab.getAttribute("aria-selected") || "");
+
+      // 1. Check active class
+      if (/(tab--active|tabs__item--active|is-active|\bactive\b|selected)/i.test(cls)) {
+        score += 50;
+      }
+
+      // 2. Check jet black active background color
+      try {
+        const bg = window.getComputedStyle(tab).backgroundColor;
+        const m = bg.match(/\d+/g);
+        if (m && m.length >= 3) {
+          const lum = 0.299 * m[0] + 0.587 * m[1] + 0.114 * m[2];
+          if (lum < 22) score += 40; // Active tab in Quotex is black (lum < 20)
+        }
+      } catch (_) {}
+
+      // 3. Check for close button or chevron dropdown (only present on active tab)
+      const hasAction = tab.querySelector("button, [class*='close'], [class*='chevron'], [class*='arrow'], [class*='dropdown'], [class*='pin']");
+      if (hasAction) score += 30;
+
+      if (score > highestScore) {
+        highestScore = score;
         bestTab = tab;
       }
     }
 
-    // Active tab must have at least 2 SVGs (it holds the close cross / chevron)
-    if (!bestTab || maxSvgs < 2) {
-      for (const tab of candidateTabs) {
-        const cls = (tab.className || "") + " " + (tab.getAttribute("aria-selected") || "");
-        if (/active|selected|current/i.test(cls)) {
-          bestTab = tab;
-          break;
-        }
-      }
+    if (bestTab && highestScore >= 30) {
+      const clone = bestTab.cloneNode(true);
+      clone.querySelectorAll("button, svg").forEach(n => n.remove());
+      return formatCleanName(clone.innerText || clone.textContent);
     }
 
-    if (!bestTab) return null;
-
-    // Check title attribute first
-    const titleAttr = bestTab.getAttribute("title") || bestTab.getAttribute("aria-label");
-    if (titleAttr && !titleAttr.includes("%") && titleAttr.length >= 3) {
-      const name = formatCleanName(titleAttr);
-      if (name) return name;
-    }
-
-    // Extract cleaned text from the chosen active tab
-    const clone = bestTab.cloneNode(true);
-    clone.querySelectorAll("button, svg").forEach(n => n.remove());
-    return formatCleanName(clone.innerText || clone.textContent);
+    return null;
   }
 
-  // Zero hardcoded fallbacks
   let activeAsset = getActiveTabFromDOM() || "Detecting...";
   let state = getVaultEntry(activeAsset);
 
-  // RETROACTIVE CANDLE HYDRATOR
+  // RETROACTIVE HISTORY HYDRATION
   function tryHydrateCandles() {
     if (state.candles1m.length >= 20 || state.livePrice === null) return;
     for (const pkt of globalHistoryPool) {
@@ -146,7 +146,7 @@
 
   function switchAsset(newName) {
     if (!newName || newName === activeAsset || newName === "Detecting...") return;
-    console.log("[QX-Assistant] Confirmed active asset:", newName);
+    console.log("[QX-Assistant] Active asset switched to:", newName);
     activeAsset = newName;
     state = getVaultEntry(activeAsset);
 
@@ -155,13 +155,14 @@
     updateUI();
   }
 
-  // 1. POINTERDOWN INTERCEPTOR (Top header and modal clicks)
+  // 1. POINTERDOWN INTERCEPTOR (Only checks elements within tab width)
   document.addEventListener("pointerdown", (e) => {
     if (e.target.closest("#qx-assistant-panel")) return;
     let el = e.target;
     for (let i = 0; i < 6 && el && el !== document.body; i++) {
-      const text = el.innerText || el.textContent || "";
-      if (/\d{1,3}\s*%/.test(text) || /\(OTC\)/i.test(text) || /[A-Z]{3}\/[A-Z]{3}/i.test(text)) {
+      const r = el.getBoundingClientRect();
+      if (r.width <= 300) {
+        const text = el.innerText || el.textContent || "";
         const parsed = formatCleanName(text);
         if (parsed) {
           switchAsset(parsed);
@@ -172,7 +173,7 @@
     }
   }, true);
 
-  // 2. INSTANT MUTATION OBSERVER
+  // 2. DOM MUTATION OBSERVER
   let observerDebounce = null;
   const observer = new MutationObserver(() => {
     clearTimeout(observerDebounce);
@@ -196,7 +197,7 @@
     if (found && found !== activeAsset) {
       switchAsset(found);
     }
-  }, 400);
+  }, 350);
 
   // ==========================================
   // PRICE & CANDLE INGESTION
@@ -251,7 +252,6 @@
     globalHistoryPool.unshift({ candles: candles, samplePrice: samplePrice });
     if (globalHistoryPool.length > 25) globalHistoryPool.pop();
 
-    // Match to active asset if live price is within 25%
     if (state.livePrice !== null && Math.abs(samplePrice - state.livePrice) / state.livePrice <= 0.25) {
       state.candles1m = [...candles];
       saveVault();
@@ -259,7 +259,6 @@
       return;
     }
 
-    // Match to existing vault assets
     for (const [name, data] of assetVault.entries()) {
       if (data.livePrice !== null && Math.abs(samplePrice - data.livePrice) / data.livePrice <= 0.25) {
         data.candles1m = [...candles];
@@ -327,7 +326,7 @@
       <div id="qx-panel-header">
         <div id="qx-panel-title">
           <span class="qx-badge">READ ONLY</span>
-          <strong>QX Assistant</strong> <small>v1.4.5</small>
+          <strong>QX Assistant</strong> <small>v1.4.6</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-refresh" title="Synchronize Tabs & History">[Sync]</button>
