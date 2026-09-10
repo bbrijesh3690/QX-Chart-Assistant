@@ -2,33 +2,33 @@
   if (window.__QX_PAGE_HOOK__) return;
   window.__QX_PAGE_HOOK__ = true;
 
-  // 1. DIRECT 60FPS PRICE PASS-THROUGH
-  let lastSentPrice = null;
-  let lastSentTime = 0;
-  const origFillText = CanvasRenderingContext2D.prototype.fillText;
+  // 1. FAST 60FPS PRICE PASS-THROUGH
+  let lastPrice = null;
+  let lastTime = 0;
+  const origFill = CanvasRenderingContext2D.prototype.fillText;
 
-  CanvasRenderingContext2D.prototype.fillText = function (text, x, y, maxWidth) {
+  CanvasRenderingContext2D.prototype.fillText = function (text, x, y, maxW) {
     if (typeof text === "string") {
       const clean = text.trim();
       if (/^\d{1,6}\.\d{2,6}$/.test(clean)) {
         const val = parseFloat(clean);
         if (!isNaN(val) && val > 0) {
           const now = Date.now();
-          if (val !== lastSentPrice || (now - lastSentTime > 250)) {
-            lastSentPrice = val;
-            lastSentTime = now;
+          if (val !== lastPrice || (now - lastTime > 200)) {
+            lastPrice = val;
+            lastTime = now;
             window.postMessage({
               type: "QX_FAST_PRICE_TICK",
-              payload: { price: val, raw: clean, timestamp: now }
+              payload: { price: val, timestamp: now }
             }, "*");
           }
         }
       }
     }
-    return origFillText.apply(this, arguments);
+    return origFill.apply(this, arguments);
   };
 
-  // 2. INCOMING WEBSOCKET HISTORY PARSER
+  // 2. WEBSOCKET CANDLE INGESTION & OUTGOING PAIR DETECTOR
   function parseCandle(item) {
     if (!item) return null;
     if (typeof item === "object" && !Array.isArray(item)) {
@@ -86,25 +86,25 @@
     return null;
   }
 
-  function deepFindCandles(data, depth = 0) {
+  function deepSearch(data, depth = 0) {
     if (!data || depth > 5) return null;
     if (Array.isArray(data)) {
       const list = extractCandles(data);
       if (list) return list;
-      for (const item of data) {
-        const res = deepFindCandles(item, depth + 1);
+      for (const it of data) {
+        const res = deepSearch(it, depth + 1);
         if (res) return res;
       }
     } else if (typeof data === "object") {
-      for (const k of ["candles", "history", "data", "quotes", "bars"]) {
+      for (const k of ["candles", "history", "data", "quotes"]) {
         if (data[k]) {
-          const res = deepFindCandles(data[k], depth + 1);
+          const res = deepSearch(data[k], depth + 1);
           if (res) return res;
         }
       }
       for (const k of Object.keys(data)) {
         if (typeof data[k] === "object") {
-          const res = deepFindCandles(data[k], depth + 1);
+          const res = deepSearch(data[k], depth + 1);
           if (res) return res;
         }
       }
@@ -112,7 +112,7 @@
     return null;
   }
 
-  function inspectIncoming(raw) {
+  function handleIncoming(raw) {
     try {
       let str = typeof raw === "string" ? raw : new TextDecoder().decode(raw);
       const b1 = str.indexOf("{");
@@ -124,7 +124,7 @@
       if (start === -1) return;
 
       const parsed = JSON.parse(str.substring(start));
-      const candles = deepFindCandles(parsed);
+      const candles = deepSearch(parsed);
       if (candles && candles.length >= 8) {
         window.postMessage({ type: "QX_HISTORICAL_CANDLES", payload: candles }, "*");
       }
@@ -134,11 +134,26 @@
   const OrigWS = window.WebSocket;
   window.WebSocket = function (...args) {
     const ws = new OrigWS(...args);
+
     ws.addEventListener("message", (ev) => {
-      if (typeof ev.data === "string") inspectIncoming(ev.data);
-      else if (ev.data instanceof Blob) ev.data.text().then(t => inspectIncoming(t));
-      else if (ev.data instanceof ArrayBuffer) inspectIncoming(ev.data);
+      if (typeof ev.data === "string") handleIncoming(ev.data);
+      else if (ev.data instanceof Blob) ev.data.text().then(t => handleIncoming(t));
+      else if (ev.data instanceof ArrayBuffer) handleIncoming(ev.data);
     });
+
+    // Strictly match currency pairs like USD_DZD_otc or NZD_JPY_otc on outgoing subscribe frames
+    const origSend = ws.send;
+    ws.send = function (data) {
+      if (typeof data === "string") {
+        const pairMatch = data.match(/\b([A-Z]{3})_([A-Z]{3})(_otc)?\b/i);
+        if (pairMatch) {
+          const formatted = `${pairMatch[1].toUpperCase()}/${pairMatch[2].toUpperCase()} (OTC)`;
+          window.postMessage({ type: "QX_WS_ASSET_DETECTED", payload: formatted }, "*");
+        }
+      }
+      return origSend.apply(this, arguments);
+    };
+
     return ws;
   };
   window.WebSocket.prototype = OrigWS.prototype;

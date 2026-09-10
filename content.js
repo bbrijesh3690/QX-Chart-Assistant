@@ -28,99 +28,117 @@
     return sessionAssetMap.get(name);
   }
 
-  // ==========================================
-  // FOOLPROOF ACTIVE TAB DETECTOR
-  // ==========================================
   function parseCleanName(str) {
     if (!str || typeof str !== "string") return null;
     let s = str.replace(/\b\d{1,3}%\b/g, "").replace(/[\n\r\t]/g, " ").trim();
-    s = s.replace(/PAIR INFORMATION/gi, "").replace(/BEGINNING OF TRADE/gi, "").trim();
-
-    // Ignore known system terms
     if (/^(settings|store|tick|live|demo|trade|chart|deposit)$/i.test(s)) return null;
 
-    // Currency pairs: USD/BRL (OTC), USD/BDT (OTC), NZD/JPY (OTC)
     const pairMatch = s.match(/([A-Z]{3}\/[A-Z]{3}(?:\s*(?:\(OTC\)|OTC))?)/i);
     if (pairMatch) return pairMatch[1].trim();
 
-    // Single-word Cryptos/Commodities: Cosmos (OTC), Bitcoin (OTC), Gold (OTC)
     const otcMatch = s.match(/([A-Za-z0-9\.\-\s]+(?:\(OTC\)|OTC))/i);
-    if (otcMatch) {
-      const name = otcMatch[1].trim();
-      if (name.length >= 3 && name.length <= 25) return name;
+    if (otcMatch && otcMatch[1].trim().length >= 3 && otcMatch[1].trim().length <= 25) {
+      return otcMatch[1].trim();
     }
     return null;
   }
 
-  function detectActiveAssetFromDOM() {
-    // Look at top header tab bar (within top 75px of the viewport)
-    const candidates = document.querySelectorAll("div, button, a");
-    for (const el of candidates) {
-      if (el.closest("#qx-assistant-panel")) continue;
-      const rect = el.getBoundingClientRect();
-      if (rect.top < 0 || rect.top > 75 || rect.height < 20 || rect.width < 50) continue;
+  // ==========================================
+  // BULLETPROOF TAB ISOLATION DETECTOR
+  // ==========================================
+  function detectActiveTab() {
+    // Strictly isolate elements whose width is BETWEEN 70px and 260px (Tabs only! Excludes header container)
+    const tabs = Array.from(document.querySelectorAll("*")).filter(el => {
+      if (el.closest("#qx-assistant-panel")) return false;
+      const r = el.getBoundingClientRect();
+      return r.top >= 0 && r.top <= 65 && r.width >= 70 && r.width <= 260 && r.height >= 22 && r.height <= 55;
+    });
 
-      // In Quotex, the active tab has the close button (x) AND chevron (v) -> at least 2 SVGs
-      const svgs = el.querySelectorAll("svg");
-      if (svgs.length >= 2) {
-        const name = parseCleanName(el.innerText || el.textContent || "");
-        if (name) return name;
+    let bestTab = null;
+    let highestScore = -1;
+
+    for (const tab of tabs) {
+      const svgs = tab.querySelectorAll("svg");
+      const hasClose = tab.querySelector("[class*='close'], svg path[d*='M']");
+      const isActiveClass = /(active|selected|current)/i.test(tab.className || "");
+
+      // In Quotex, the active tab has 3 SVGs (flag + chevron + close). Inactive tabs have only 1.
+      let score = svgs.length;
+      if (isActiveClass) score += 5;
+      if (hasClose) score += 3;
+
+      if (score > highestScore) {
+        const name = parseCleanName(tab.innerText || tab.textContent || "");
+        if (name) {
+          highestScore = score;
+          bestTab = name;
+        }
       }
     }
-
-    // Fallback: search any element having active/selected class in top area
-    for (const el of candidates) {
-      if (el.closest("#qx-assistant-panel")) continue;
-      const rect = el.getBoundingClientRect();
-      if (rect.top > 75) continue;
-      const cls = (el.className || "") + " " + (el.getAttribute("aria-selected") || "");
-      if (/active|selected/i.test(cls)) {
-        const name = parseCleanName(el.innerText || el.textContent || "");
-        if (name) return name;
-      }
-    }
-
-    return null;
+    return bestTab;
   }
 
-  let activeAsset = detectActiveAssetFromDOM() || "Cosmos (OTC)";
+  let activeAsset = detectActiveTab() || "USD/DZD (OTC)";
   let state = getAssetState(activeAsset);
 
   function switchAsset(newName) {
     if (!newName || newName === activeAsset) return;
+    console.log("[QX-Assistant] Switching to:", newName);
     activeAsset = newName;
     state = getAssetState(activeAsset);
+
+    // SANITY PURGE: Discard stale candle data from previous assets immediately
+    if (state.livePrice !== null && state.candles1m.length > 0) {
+      const last = state.candles1m[state.candles1m.length - 1];
+      if (Math.abs(last.close - state.livePrice) / state.livePrice > 0.3) {
+        state.candles1m = [];
+        state.currentCandle = null;
+      }
+    }
+
     saveCache();
     updateUI();
   }
 
-  // Instant capture click on tabs
+  // Instant capture on tab click
   document.addEventListener("click", (e) => {
     if (e.target.closest("#qx-assistant-panel")) return;
-    let node = e.target;
-    for (let i = 0; i < 4 && node && node !== document.body; i++) {
-      const name = parseCleanName(node.innerText || node.textContent || "");
-      if (name) {
-        switchAsset(name);
-        break;
+    let el = e.target;
+    while (el && el !== document.body) {
+      const r = el.getBoundingClientRect();
+      if (r.top >= 0 && r.top <= 65 && r.width >= 60 && r.width <= 260) {
+        const name = parseCleanName(el.innerText || el.textContent || "");
+        if (name) {
+          switchAsset(name);
+          break;
+        }
       }
-      node = node.parentElement;
+      el = el.parentElement;
     }
   }, true);
 
   setInterval(() => {
-    const domAsset = detectActiveAssetFromDOM();
-    if (domAsset && domAsset !== activeAsset) {
-      switchAsset(domAsset);
+    const detected = detectActiveTab();
+    if (detected && detected !== activeAsset) {
+      switchAsset(detected);
     }
   }, 400);
 
   // ==========================================
-  // REAL-TIME PRICE & HISTORY (WITH PRICE SANITY GUARD)
+  // 60FPS PRICE INGESTION & ROBUST AGGREGATION
   // ==========================================
   function ingestFastTick(price, time) {
     state.livePrice = price;
     const minFloor = Math.floor(time / 60000) * 60000;
+
+    // Purge any contaminated candles if price scale drastically shifts (e.g. 0.19 to 254)
+    if (state.candles1m.length > 0) {
+      const last = state.candles1m[state.candles1m.length - 1];
+      if (Math.abs(last.close - price) / price > 0.3) {
+        state.candles1m = [];
+        state.currentCandle = null;
+      }
+    }
 
     if (!state.currentCandle) {
       state.currentCandle = { time: minFloor, open: price, high: price, low: price, close: price };
@@ -143,12 +161,11 @@
   function ingestHistory(candles) {
     if (!candles || candles.length === 0) return;
 
-    // SANITY GUARD: Reject candle packets from other assets (e.g. 126.0 when Cosmos is 1.87)
+    // Reject candle packets from other assets
     if (state.livePrice !== null) {
-      const sampleClose = candles[candles.length - 1].close;
-      const ratio = sampleClose / state.livePrice;
-      if (ratio < 0.5 || ratio > 2.0) {
-        return; // Mismatched asset history discarded
+      const sample = candles[candles.length - 1].close;
+      if (Math.abs(sample - state.livePrice) / state.livePrice > 0.3) {
+        return;
       }
     }
 
@@ -221,7 +238,7 @@
       <div id="qx-panel-header">
         <div id="qx-panel-title">
           <span class="qx-badge">READ ONLY</span>
-          <strong>QX Assistant</strong> <small>v1.3.3</small>
+          <strong>QX Assistant</strong> <small>v1.3.4</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-reset-pos" title="Reset Position">[R]</button>
@@ -383,6 +400,8 @@
       ingestFastTick(e.data.payload.price, e.data.payload.timestamp);
     } else if (e.data?.type === "QX_HISTORICAL_CANDLES") {
       ingestHistory(e.data.payload);
+    } else if (e.data?.type === "QX_WS_ASSET_DETECTED") {
+      switchAsset(e.data.payload);
     }
   });
 })();
