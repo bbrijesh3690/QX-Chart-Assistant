@@ -1,11 +1,11 @@
 (function () {
-  const VAULT_KEY = "__QX_ASSET_VAULT_V21__";
-  const LOG_KEY = "__QX_SHARED_LOG_V9__";
-  const PENDING_KEY = "__QX_SHARED_PENDING_V7__";
+  const VAULT_KEY = "__QX_ASSET_VAULT_V22__";
+  const LOG_KEY = "__QX_SHARED_LOG_V10__";
+  const PENDING_KEY = "__QX_SHARED_PENDING_V8__";
 
   const assetVault = new Map();
   const globalHistoryPool = [];
-  const backtestCache = new Map(); // Asset -> Cached Backtest Result
+  const backtestCache = new Map();
 
   // ==========================================
   // CROSS-WINDOW BROADCAST CHANNEL ENGINE
@@ -390,7 +390,6 @@
     saveVault();
     updateUI();
 
-    // Preserve Backtest View: shows cached stats for this asset if already run, without wiping
     if (activeTab === "BACKTEST") {
       renderBacktestUI();
     }
@@ -634,7 +633,7 @@
       btContainer.innerHTML = `
         <div class="qx-bt-prompt" style="color: #fca5a5;">
           ⚠️ Need >= 25 loaded 1m candles for <strong>${activeAsset}</strong> (currently has ${candles ? candles.length : 0}).
-          <br><span style="color: #64748b; font-size: 9.5px;">Click <strong>[Sync]</strong> above to ingest chart history, then click <strong>Run</strong>.</span>
+          <br><span style="color: #64748b; font-size: 9.5px;">Click <strong>Sync</strong> above to ingest chart history, then click <strong>Run</strong>.</span>
         </div>
       `;
       return;
@@ -715,7 +714,6 @@
 
     const spanHours = (candles.length / 60).toFixed(1);
 
-    // Save into persistent cache for this asset
     backtestCache.set(activeAsset, {
       asset: activeAsset,
       candlesCount: candles.length,
@@ -891,14 +889,13 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.23</small>
+          <strong>QX Assistant</strong> <small>v1.4.24</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-sound-strong" class="qx-audio-btn" title="Toggle Strong Alerts (Triple Fanfare x3)">${strongSoundEnabled ? "S:🔊" : "S:🔇"}</button>
           <button id="qx-btn-sound-bias" class="qx-audio-btn" title="Toggle Bias Alerts (Arcade Ping x3)">${biasSoundEnabled ? "B:🔊" : "B:🔇"}</button>
-          <button id="qx-btn-refresh" title="Synchronize Tabs & History">[Sync]</button>
-          <button id="qx-btn-reset-pos" title="Reset Position">[R]</button>
-          <button id="qx-btn-min" title="Minimize">[-]</button>
+          <button id="qx-btn-refresh" class="qx-sync-btn" title="Synchronize Tabs & History">Sync</button>
+          <button id="qx-btn-min" class="qx-mac-dot qx-mac-min" title="Minimize / Expand Window"></button>
         </div>
       </div>
       <div id="qx-panel-body">
@@ -948,23 +945,23 @@
           </div>
         </div>
 
-        <!-- DUAL-TAB DRAWER: FORWARD-TEST & BACKTEST -->
+        <!-- DUAL-TAB DRAWER: Forward.test & Backward.test -->
         <div class="qx-section" id="qx-testing-section">
           <div class="qx-tabs-header">
             <div class="qx-tab-group">
-              <button id="qx-tab-btn-forward" class="qx-tab-btn qx-tab-active">Forward-Test</button>
-              <button id="qx-tab-btn-backtest" class="qx-tab-btn">Backtest</button>
+              <button id="qx-tab-btn-forward" class="qx-tab-btn qx-tab-active">Forward.test</button>
+              <button id="qx-tab-btn-backtest" class="qx-tab-btn">Backward.test</button>
             </div>
             <div id="qx-forward-controls" class="qx-tab-actions">
               <span id="qx-log-summary" class="qx-log-pill">0W - 0L (0%)</span>
               <button id="qx-btn-clear-log" class="qx-clear-btn" title="Reset Shared Session Log Across Windows">Clr</button>
             </div>
             <div id="qx-backtest-controls" class="qx-tab-actions qx-hidden">
-              <button id="qx-btn-run-bt" class="qx-bt-run-btn" title="Run Backtest on Active Chart History">Run</button>
+              <button id="qx-btn-run-bt" class="qx-bt-run-btn" title="Run Backward.test on Active Chart History">Run</button>
             </div>
           </div>
 
-          <!-- View 1: Forward-Test Table -->
+          <!-- View 1: Forward.test Table -->
           <div id="qx-view-forward" class="qx-log-table-wrap">
             <table class="qx-log-table">
               <thead>
@@ -987,7 +984,7 @@
             </table>
           </div>
 
-          <!-- View 2: Backtest Table -->
+          <!-- View 2: Backward.test Table -->
           <div id="qx-view-backtest" class="qx-log-table-wrap qx-hidden">
             <div id="qx-bt-content"></div>
           </div>
@@ -1040,7 +1037,6 @@
       document.addEventListener("mouseup", onMouseUp);
     });
 
-    // Dual-Tab Switch Handlers (Visual Display Toggle Only)
     const tabForward = document.getElementById("qx-tab-btn-forward");
     const tabBacktest = document.getElementById("qx-tab-btn-backtest");
     const viewForward = document.getElementById("qx-view-forward");
@@ -1067,7 +1063,7 @@
       viewForward.classList.add("qx-hidden");
       controlsBacktest.classList.remove("qx-hidden");
       controlsForward.classList.add("qx-hidden");
-      renderBacktestUI(); // Displays cached result for activeAsset, never recalculating destructively
+      renderBacktestUI();
     });
 
     const btnRunBt = document.getElementById("qx-btn-run-bt");
@@ -1110,14 +1106,15 @@
 
     const btnRefresh = document.getElementById("qx-btn-refresh");
     btnRefresh.addEventListener("click", () => {
-      btnRefresh.textContent = "[...]";
+      btnRefresh.textContent = "...";
       const found = getActiveTabFromDOM();
       if (found) switchAsset(found);
       tryHydrateCandles();
       window.postMessage({ type: "QX_REQ_REPLAY" }, "*");
       setTimeout(() => {
-        btnRefresh.textContent = "[Sync]";
+        btnRefresh.textContent = "Sync";
         updateUI();
+        if (activeTab === "BACKTEST") renderBacktestUI();
       }, 300);
     });
 
@@ -1126,15 +1123,6 @@
     btnMin.addEventListener("click", () => {
       const isHidden = bodyEl.style.display === "none";
       bodyEl.style.display = isHidden ? "block" : "none";
-      btnMin.textContent = isHidden ? "[-]" : "[+]";
-    });
-
-    const btnReset = document.getElementById("qx-btn-reset-pos");
-    btnReset.addEventListener("click", () => {
-      panel.style.left = "auto";
-      panel.style.top = "70px";
-      panel.style.right = "20px";
-      localStorage.removeItem("__qx_panel_pos__");
     });
 
     renderLogUI();
