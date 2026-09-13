@@ -1,16 +1,17 @@
 (function () {
-  const VAULT_KEY = "__QX_ASSET_VAULT_V15__";
-  const LOG_KEY = "__QX_FORWARD_LOG_V3__";
-  const PENDING_KEY = "__QX_PENDING_TRADES_V1__";
+  const VAULT_KEY = "__QX_ASSET_VAULT_V16__";
+  const LOG_KEY = "__QX_FORWARD_LOG_V4__";
+  const PENDING_KEY = "__QX_PENDING_TRADES_V2__";
 
   const assetVault = new Map();
   const globalHistoryPool = [];
 
   // ==========================================
-  // RETROACTIVE FORWARD-TEST ENGINE
+  // RETROACTIVE FORWARD-TEST ENGINE & FILTER
   // ==========================================
   let tradeLog = [];
   let pendingTrades = [];
+  let currentLogFilter = "ALL";
 
   function loadLog() {
     try {
@@ -52,7 +53,7 @@
       outcome: outcome
     });
 
-    if (tradeLog.length > 30) tradeLog.pop();
+    if (tradeLog.length > 35) tradeLog.pop();
     saveLog();
     renderLogUI();
   }
@@ -69,7 +70,6 @@
         continue;
       }
 
-      // Check if the candle has completed
       const matchingCandle = candles.find(c => c.time === trade.minTime);
       const isPast = currentCandleTime ? currentCandleTime > trade.minTime : Date.now() >= trade.minTime + 60000;
 
@@ -77,7 +77,6 @@
         settleTrade(trade, matchingCandle.close);
         updated = true;
       } else if (Date.now() - trade.minTime > 7200000) {
-        // Drop expired trades older than 2 hours to prevent stale records
         updated = true;
       } else {
         remaining.push(trade);
@@ -419,10 +418,8 @@
       state.candles1m.push(finishedCandle);
       if (state.candles1m.length > 240) state.candles1m.shift();
 
-      // 1. RECONCILE PENDING TRADES FOR ACTIVE ASSET
       reconcilePendingTrades(activeAsset, state.candles1m, minFloor);
 
-      // 2. REGISTER NEW TRADE TICKET FOR OPENING CANDLE
       if (state.activeSignal && state.activeSignal.dir !== "NONE" && !state.activeFlipped && state.evalMinute === finishedCandle.time) {
         const alreadyPending = pendingTrades.some(t => t.asset === activeAsset && t.minTime === minFloor);
         if (!alreadyPending) {
@@ -560,23 +557,47 @@
     }
   }
 
+  // ==========================================
+  // RENDER LOG UI & PAIR FILTER RECALCULATION
+  // ==========================================
   function renderLogUI() {
     const bodyEl = document.getElementById("qx-log-body");
     const summaryEl = document.getElementById("qx-log-summary");
+    const filterEl = document.getElementById("qx-log-pair-filter");
     if (!bodyEl || !summaryEl) return;
 
-    if (tradeLog.length === 0) {
-      bodyEl.innerHTML = `<tr><td colspan="6" class="qx-empty-log">Awaiting first settled candle...</td></tr>`;
+    // 1. Maintain & Update Dynamic Filter Options
+    if (filterEl) {
+      const distinctPairs = Array.from(new Set(tradeLog.map(t => t.asset))).filter(Boolean);
+      const existingOptions = Array.from(filterEl.options).map(o => o.value);
+      const targetValues = ["ALL", ...distinctPairs];
+
+      if (existingOptions.join(",") !== targetValues.join(",")) {
+        filterEl.innerHTML = `<option value="ALL">Pair (All)</option>` + 
+          distinctPairs.map(p => `<option value="${p}">${p.replace(/\s*\(OTC\)/gi, " *").slice(0, 9)}</option>`).join("");
+        filterEl.value = targetValues.includes(currentLogFilter) ? currentLogFilter : "ALL";
+      }
+      currentLogFilter = filterEl.value;
+    }
+
+    // 2. Filter Active Trades
+    const displayList = currentLogFilter === "ALL" 
+      ? tradeLog 
+      : tradeLog.filter(t => t.asset === currentLogFilter);
+
+    if (displayList.length === 0) {
+      bodyEl.innerHTML = `<tr><td colspan="6" class="qx-empty-log">${tradeLog.length === 0 ? "Awaiting first settled candle..." : "No trades for selected pair"}</td></tr>`;
       summaryEl.textContent = `0W - 0L (0%)`;
       summaryEl.style.background = "#2d3748";
       return;
     }
 
+    // 3. Dynamic Win-Rate Recalculation for Filtered View
     let wins = 0;
     let losses = 0;
     let ties = 0;
 
-    tradeLog.forEach(t => {
+    displayList.forEach(t => {
       if (t.outcome === "WIN") wins++;
       else if (t.outcome === "LOSS") losses++;
       else ties++;
@@ -588,8 +609,9 @@
     summaryEl.textContent = `${wins}W - ${losses}L (${wr}%)`;
     summaryEl.style.background = wr >= 65 ? "#065f46" : (wr >= 50 ? "#2d3748" : "#7f1d1d");
 
+    // 4. Render Rows (Latest 5 in current filter)
     let rowsHtml = "";
-    tradeLog.slice(0, 5).forEach(t => {
+    displayList.slice(0, 5).forEach(t => {
       const outcomeBadge = t.outcome === "WIN" 
         ? `<span class="qx-badge-win">WIN</span>` 
         : (t.outcome === "LOSS" ? `<span class="qx-badge-loss">LOSS</span>` : `<span class="qx-badge-tie">TIE</span>`);
@@ -624,7 +646,7 @@
       <div id="qx-panel-header">
         <div id="qx-panel-title">
           <span class="qx-badge">READ ONLY</span>
-          <strong>QX Assistant</strong> <small>v1.4.17</small>
+          <strong>QX Assistant</strong> <small>v1.4.18</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-sound-strong" class="qx-audio-btn" title="Toggle Strong Alerts (Triple Fanfare x3)">${strongSoundEnabled ? "S:🔊" : "S:🔇"}</button>
@@ -681,7 +703,7 @@
           </div>
         </div>
 
-        <!-- FORWARD-TEST LOG DRAWER -->
+        <!-- FORWARD-TEST LOG DRAWER WITH IN-COLUMN PAIR FILTER -->
         <div class="qx-section" id="qx-log-section">
           <div class="qx-log-header">
             <span class="qx-section-title" style="margin-bottom: 0;">FORWARD-TEST LOG</span>
@@ -695,7 +717,11 @@
               <thead>
                 <tr>
                   <th>Time</th>
-                  <th>Pair</th>
+                  <th>
+                    <select id="qx-log-pair-filter" class="qx-th-filter" title="Filter by Pair">
+                      <option value="ALL">Pair (All)</option>
+                    </select>
+                  </th>
                   <th>Dir</th>
                   <th>Entry</th>
                   <th>Exit</th>
@@ -728,7 +754,7 @@
     let dragOffset = { x: 0, y: 0 };
 
     header.addEventListener("mousedown", (e) => {
-      if (e.target.tagName === "BUTTON") return;
+      if (e.target.tagName === "BUTTON" || e.target.tagName === "SELECT") return;
       isDragging = true;
       dragOffset.x = e.clientX - panel.offsetLeft;
       dragOffset.y = e.clientY - panel.offsetTop;
@@ -756,6 +782,12 @@
       document.addEventListener("mouseup", onMouseUp);
     });
 
+    const filterEl = document.getElementById("qx-log-pair-filter");
+    filterEl.addEventListener("change", (e) => {
+      currentLogFilter = e.target.value;
+      renderLogUI();
+    });
+
     const btnSoundStrong = document.getElementById("qx-btn-sound-strong");
     btnSoundStrong.addEventListener("click", () => {
       const cur = localStorage.getItem("__qx_sound_strong__") !== "false";
@@ -778,6 +810,7 @@
     btnClearLog.addEventListener("click", () => {
       tradeLog = [];
       pendingTrades = [];
+      currentLogFilter = "ALL";
       saveLog();
       renderLogUI();
     });

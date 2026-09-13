@@ -274,6 +274,26 @@
   font-family: sans-serif;
   font-size: 10.5px;
 }
+
+/* IN-COLUMN PAIR FILTER DROPDOWN */
+.qx-th-filter {
+  background: #151821;
+  color: #38bdf8;
+  border: 1px solid #2d3748;
+  border-radius: 3px;
+  font-family: sans-serif;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 2px;
+  cursor: pointer;
+  outline: none;
+  max-width: 80px;
+}
+.qx-th-filter:hover, .qx-th-filter:focus {
+  border-color: #0ea5e9;
+  background: #1e293b;
+}
+
 .qx-badge-win {
   background: #065f46;
   color: #6ee7b7;

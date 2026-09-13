@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.4.17",
-  "description": "Read-only assistant with multi-asset retroactive forward-test catch-up, isolated vaults, and win-rate log.",
+  "version": "1.4.18",
+  "description": "Read-only assistant with in-column pair filtering for forward-test log, retroactive catch-up, and multi-tier audio.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",
