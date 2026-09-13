@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.4.11",
-  "description": "Read-only assistant with millisecond-precision 58s-60s flip watchdog gate and dynamic sizing.",
+  "version": "1.4.13",
+  "description": "Read-only assistant with dual-tier audio synthesizer for Strong and Bias signals with independent mute toggles.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",

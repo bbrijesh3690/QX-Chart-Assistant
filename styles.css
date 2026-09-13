@@ -2,9 +2,9 @@
   position: fixed;
   top: 70px;
   right: 20px;
-  min-width: 295px;
+  min-width: 310px;
   width: max-content;
-  max-width: 380px;
+  max-width: 400px;
   background: #151821;
   color: #e2e8f0;
   border: 1px solid #2d3748;
@@ -26,6 +26,7 @@
   border-bottom: 1px solid #2d3748;
   border-top-left-radius: 8px;
   border-top-right-radius: 8px;
+  gap: 8px;
 }
 #qx-panel-header:active {
   cursor: grabbing;
@@ -34,6 +35,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  white-space: nowrap;
 }
 .qx-badge {
   background: #0ea5e9;
@@ -43,16 +45,34 @@
   padding: 2px 4px;
   border-radius: 3px;
 }
+#qx-panel-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
 #qx-panel-controls button {
   background: transparent;
   border: none;
   color: #94a3b8;
   cursor: pointer;
   font-size: 11px;
-  padding: 0 4px;
+  padding: 0 3px;
 }
 #qx-panel-controls button:hover {
   color: #ffffff;
+}
+.qx-audio-btn {
+  font-size: 10px !important;
+  font-weight: 700;
+  padding: 1px 4px !important;
+  background: #131722 !important;
+  border: 1px solid #2d3748 !important;
+  border-radius: 4px;
+  color: #38bdf8 !important;
+}
+.qx-audio-btn:hover {
+  background: #1e293b !important;
+  color: #ffffff !important;
 }
 #qx-panel-body {
   padding: 10px;

@@ -1,7 +1,91 @@
 (function () {
-  const VAULT_KEY = "__QX_ASSET_VAULT_V9__";
+  const VAULT_KEY = "__QX_ASSET_VAULT_V11__";
   const assetVault = new Map();
   const globalHistoryPool = [];
+
+  // ==========================================
+  // DUAL-TIER WEB AUDIO SYNTHESIZER
+  // ==========================================
+  let audioCtx = null;
+  function getAudioContext() {
+    if (!audioCtx) {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (AudioCtx) audioCtx = new AudioCtx();
+    }
+    if (audioCtx && audioCtx.state === "suspended") {
+      audioCtx.resume().catch(() => {});
+    }
+    return audioCtx;
+  }
+
+  document.addEventListener("pointerdown", () => {
+    getAudioContext();
+  }, { once: false });
+
+  function playAlert(tier, dir) {
+    try {
+      const ctx = getAudioContext();
+      if (!ctx) return;
+
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      if (tier === "STRONG") {
+        if (dir === "CALL") {
+          // Strong Call: Bold rising harmonic chime (E5 -> A5)
+          osc.type = "sine";
+          osc.frequency.setValueAtTime(659.25, now);
+          osc.frequency.exponentialRampToValueAtTime(880.00, now + 0.12);
+
+          gain.gain.setValueAtTime(0.001, now);
+          gain.gain.exponentialRampToValueAtTime(0.35, now + 0.04);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+
+          osc.start(now);
+          osc.stop(now + 0.45);
+        } else {
+          // Strong Put: Bold descending harmonic chime (A5 -> D5)
+          osc.type = "sine";
+          osc.frequency.setValueAtTime(880.00, now);
+          osc.frequency.exponentialRampToValueAtTime(587.33, now + 0.12);
+
+          gain.gain.setValueAtTime(0.001, now);
+          gain.gain.exponentialRampToValueAtTime(0.35, now + 0.04);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+
+          osc.start(now);
+          osc.stop(now + 0.45);
+        }
+      } else if (tier === "BIAS") {
+        if (dir === "CALL") {
+          // Call Bias: Crisp, gentle high blip (G5 @ 784Hz)
+          osc.type = "sine";
+          osc.frequency.setValueAtTime(783.99, now);
+
+          gain.gain.setValueAtTime(0.001, now);
+          gain.gain.exponentialRampToValueAtTime(0.20, now + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.20);
+
+          osc.start(now);
+          osc.stop(now + 0.20);
+        } else {
+          // Put Bias: Crisp, gentle lower blip (C5 @ 523Hz)
+          osc.type = "sine";
+          osc.frequency.setValueAtTime(523.25, now);
+
+          gain.gain.setValueAtTime(0.001, now);
+          gain.gain.exponentialRampToValueAtTime(0.20, now + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.20);
+
+          osc.start(now);
+          osc.stop(now + 0.20);
+        }
+      }
+    } catch (_) {}
+  }
 
   function loadVault() {
     try {
@@ -339,15 +423,15 @@
     }
 
     if (callScore >= 3.5 && callScore > putScore) {
-      return { setup: "STRONG BUY", score: Math.min(5, Math.round(callScore)), color: "#10b981", dir: "CALL" };
+      return { setup: "STRONG BUY", score: Math.min(5, Math.round(callScore)), color: "#10b981", dir: "CALL", tier: "STRONG" };
     } else if (putScore >= 3.5 && putScore > callScore) {
-      return { setup: "STRONG PUT", score: Math.min(5, Math.round(putScore)), color: "#ef4444", dir: "PUT" };
+      return { setup: "STRONG PUT", score: Math.min(5, Math.round(putScore)), color: "#ef4444", dir: "PUT", tier: "STRONG" };
     } else if (callScore >= 2.5 && callScore > putScore) {
-      return { setup: "CALL Bias", score: Math.round(callScore), color: "#34d399", dir: "CALL" };
+      return { setup: "CALL Bias", score: Math.round(callScore), color: "#34d399", dir: "CALL", tier: "BIAS" };
     } else if (putScore >= 2.5 && putScore > callScore) {
-      return { setup: "PUT Bias", score: Math.round(putScore), color: "#f87171", dir: "PUT" };
+      return { setup: "PUT Bias", score: Math.round(putScore), color: "#f87171", dir: "PUT", tier: "BIAS" };
     } else {
-      return { setup: "Neutral", score: Math.max(callScore, putScore).toFixed(0), color: "#94a3b8", dir: "NONE" };
+      return { setup: "Neutral", score: Math.max(callScore, putScore).toFixed(0), color: "#94a3b8", dir: "NONE", tier: "NONE" };
     }
   }
 
@@ -355,15 +439,20 @@
     if (document.getElementById("qx-assistant-panel")) return;
     if (!document.body) return;
 
+    const strongSoundEnabled = localStorage.getItem("__qx_sound_strong__") !== "false";
+    const biasSoundEnabled = localStorage.getItem("__qx_sound_bias__") !== "false";
+
     const panel = document.createElement("div");
     panel.id = "qx-assistant-panel";
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
           <span class="qx-badge">READ ONLY</span>
-          <strong>QX Assistant</strong> <small>v1.4.11</small>
+          <strong>QX Assistant</strong> <small>v1.4.13</small>
         </div>
         <div id="qx-panel-controls">
+          <button id="qx-btn-sound-strong" class="qx-audio-btn" title="Toggle Strong Alerts Sound">${strongSoundEnabled ? "S:🔊" : "S:🔇"}</button>
+          <button id="qx-btn-sound-bias" class="qx-audio-btn" title="Toggle Bias Alerts Sound">${biasSoundEnabled ? "B:🔊" : "B:🔇"}</button>
           <button id="qx-btn-refresh" title="Synchronize Tabs & History">[Sync]</button>
           <button id="qx-btn-reset-pos" title="Reset Position">[R]</button>
           <button id="qx-btn-min" title="Minimize">[-]</button>
@@ -462,6 +551,25 @@
       document.addEventListener("mouseup", onMouseUp);
     });
 
+    // Audio Toggle Handlers
+    const btnSoundStrong = document.getElementById("qx-btn-sound-strong");
+    btnSoundStrong.addEventListener("click", () => {
+      const cur = localStorage.getItem("__qx_sound_strong__") !== "false";
+      const next = !cur;
+      localStorage.setItem("__qx_sound_strong__", next ? "true" : "false");
+      btnSoundStrong.textContent = next ? "S:🔊" : "S:🔇";
+      if (next) playAlert("STRONG", "CALL"); // Test preview
+    });
+
+    const btnSoundBias = document.getElementById("qx-btn-sound-bias");
+    btnSoundBias.addEventListener("click", () => {
+      const cur = localStorage.getItem("__qx_sound_bias__") !== "false";
+      const next = !cur;
+      localStorage.setItem("__qx_sound_bias__", next ? "true" : "false");
+      btnSoundBias.textContent = next ? "B:🔊" : "B:🔇";
+      if (next) playAlert("BIAS", "CALL"); // Test preview
+    });
+
     const btnRefresh = document.getElementById("qx-btn-refresh");
     btnRefresh.addEventListener("click", () => {
       btnRefresh.textContent = "[...]";
@@ -504,7 +612,7 @@
   }, 400);
 
   // ==============================================================
-  // ANALYSIS & MILLISECOND-PRECISION FLIP GATE (58s - 60s)
+  // ANALYSIS & DUAL-TIER SOUND & FLIP GATE
   // ==============================================================
   function updateAnalysis() {
     const dec = state.decimals !== undefined ? state.decimals : 3;
@@ -543,7 +651,6 @@
 
     const liveVerdict = evaluateConfluence(trend15m, trend5m, rsi, state.livePrice, sr);
 
-    // Millisecond-accurate time tracking
     const now = Date.now();
     const msInMinute = now % 60000;
     const sec = Math.floor(msInMinute / 1000);
@@ -566,7 +673,7 @@
     const advisoryEl = document.getElementById("qx-ui-advisory");
 
     // ==============================================================
-    // WINDOW A: 55,000ms - 59,999ms (Lock at 55s + 58s-60s Flip Gate)
+    // WINDOW A: 55,000ms - 59,999ms (Lock at 55s + Chimes + Flip Gate)
     // ==============================================================
     if (msInMinute >= 55000) {
       // 1. Initial lock at 55.0 seconds
@@ -575,9 +682,19 @@
         state.activeScore = liveVerdict.score;
         state.evalMinute = currentMinFloor;
         state.activeFlipped = false;
+
+        // DUAL-TIER SOUND LOGIC
+        const strongSoundEnabled = localStorage.getItem("__qx_sound_strong__") !== "false";
+        const biasSoundEnabled = localStorage.getItem("__qx_sound_bias__") !== "false";
+
+        if (state.activeSignal.tier === "STRONG" && strongSoundEnabled) {
+          playAlert("STRONG", state.activeSignal.dir);
+        } else if (state.activeSignal.tier === "BIAS" && biasSoundEnabled) {
+          playAlert("BIAS", state.activeSignal.dir);
+        }
       }
 
-      // 2. STRICT 58.0s - 59.999s WATCHDOG GATE (Noise filtered between 55.0s and 57.999s)
+      // 2. Strict 58.0s - 59.999s Flip Gate
       if (msInMinute >= 58000 && state.activeSignal && state.activeSignal.dir !== "NONE") {
         const flippedNow = (state.activeSignal.dir === "CALL" && liveVerdict.dir !== "CALL") ||
                            (state.activeSignal.dir === "PUT" && liveVerdict.dir !== "PUT") ||
@@ -630,9 +747,7 @@
       }
     }
 
-    // ==============================================================
-    // ADVISORY BANNER: RENDERS ON FLIP (PERSISTS THROUGH 54s)
-    // ==============================================================
+    // Dynamic Flip Banner
     if (advisoryEl) {
       if (state.activeFlipped) {
         advisoryEl.className = "qx-advisory-box qx-advisory-flip";
