@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.4.32",
-  "description": "Read-only assistant with candle-by-candle Signal Triggered & Trade Outcome columns in .xlsx export, bank-statement summary, and 1000-trade retention buffer.",
+  "version": "1.4.33",
+  "description": "Read-only assistant with polished OpenXML .xlsx styling, auto column widths, native percentage formatting, and row-by-row candle audit.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",
