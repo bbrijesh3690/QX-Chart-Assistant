@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.4.37",
-  "description": "Read-only assistant with clean session bootstrap, total trades counter, and atomic multi-window sync.",
+  "version": "1.4.38",
+  "description": "Read-only assistant with hardened dual-channel sync, active polling reconciliation, and executive .xlsx dashboard export.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",

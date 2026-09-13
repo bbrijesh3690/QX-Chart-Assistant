@@ -1,7 +1,7 @@
 (function () {
   const VAULT_KEY = "__QX_ASSET_VAULT_V32__";
-  const LOG_KEY = "__QX_SHARED_LOG_V21__";
-  const PENDING_KEY = "__QX_SHARED_PENDING_V19__";
+  const LOG_KEY = "__QX_SHARED_LOG_V22__";
+  const PENDING_KEY = "__QX_SHARED_PENDING_V20__";
 
   const assetVault = new Map();
   const globalHistoryPool = [];
@@ -45,10 +45,7 @@
     }
   });
 
-  setInterval(() => {
-    loadLog();
-    if (activeTab === "FORWARD") renderLogUI();
-  }, 1000);
+  setInterval(() => { loadLog(); if (activeTab === "FORWARD") renderLogUI(); }, 500);
 
   // ==============================================================
   // ATOMIC CONCURRENCY ENGINE (RACE-CONDITION PROOF)
@@ -1643,7 +1640,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.37</small>
+          <strong>QX Assistant</strong> <small>v1.4.38</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-sound-strong" class="qx-audio-btn" title="Toggle Strong Alerts (Triple Fanfare x3)">${strongSoundEnabled ? "S:🔊" : "S:🔇"}</button>
