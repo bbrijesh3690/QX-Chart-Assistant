@@ -1,7 +1,7 @@
 (function () {
-  const VAULT_KEY = "__QX_ASSET_VAULT_V31__";
-  const LOG_KEY = "__QX_SHARED_LOG_V19__";
-  const PENDING_KEY = "__QX_SHARED_PENDING_V17__";
+  const VAULT_KEY = "__QX_ASSET_VAULT_V32__";
+  const LOG_KEY = "__QX_SHARED_LOG_V20__";
+  const PENDING_KEY = "__QX_SHARED_PENDING_V18__";
 
   const assetVault = new Map();
   const globalHistoryPool = [];
@@ -27,16 +27,6 @@
     }
   }
 
-  function saveLog(broadcast = true) {
-    try {
-      localStorage.setItem(LOG_KEY, JSON.stringify(tradeLog));
-      localStorage.setItem(PENDING_KEY, JSON.stringify(pendingTrades));
-      if (broadcast && syncChannel) {
-        syncChannel.postMessage({ type: "QX_SYNC_LOG_UPDATE" });
-      }
-    } catch (_) {}
-  }
-
   loadLog();
 
   if (syncChannel) {
@@ -60,72 +50,103 @@
     if (activeTab === "FORWARD") renderLogUI();
   }, 1000);
 
-  function settleTrade(trade, exitPrice) {
-    const tradeId = `${trade.asset}_${trade.minTime}`;
-    loadLog();
+  // ==============================================================
+  // ATOMIC CONCURRENCY ENGINE (RACE-CONDITION PROOF)
+  // ==============================================================
+  function atomicQueuePendingTrade(newTrade) {
+    try {
+      const rawLog = localStorage.getItem(LOG_KEY);
+      const curLog = rawLog ? JSON.parse(rawLog) : [];
+      if (curLog.some(t => t.id === newTrade.id)) return;
 
-    if (tradeLog.some(t => t.id === tradeId)) return;
+      const rawPending = localStorage.getItem(PENDING_KEY);
+      const curPending = rawPending ? JSON.parse(rawPending) : [];
 
-    let outcome = "TIE";
-    if (trade.dir === "CALL") {
-      outcome = exitPrice > trade.entryPrice ? "WIN" : (exitPrice < trade.entryPrice ? "LOSS" : "TIE");
-    } else if (trade.dir === "PUT") {
-      outcome = exitPrice < trade.entryPrice ? "WIN" : (exitPrice > trade.entryPrice ? "LOSS" : "TIE");
-    }
-
-    const d = new Date(trade.minTime);
-    const timeStr = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-
-    tradeLog.unshift({
-      id: tradeId,
-      time: timeStr,
-      asset: trade.asset,
-      setup: trade.setup,
-      tier: trade.tier || (trade.setup && trade.setup.includes("STRONG") ? "STRONG" : "BIAS"),
-      score: trade.score || 0,
-      dir: trade.dir,
-      entry: trade.entryPrice,
-      exit: exitPrice,
-      decimals: trade.decimals,
-      outcome: outcome
-    });
-
-    if (tradeLog.length > 1000) tradeLog.pop();
-    saveLog(true);
-    if (activeTab === "FORWARD") renderLogUI();
+      if (!curPending.some(t => t.id === newTrade.id)) {
+        curPending.push(newTrade);
+        localStorage.setItem(PENDING_KEY, JSON.stringify(curPending));
+        pendingTrades = curPending;
+        if (syncChannel) syncChannel.postMessage({ type: "QX_SYNC_LOG_UPDATE" });
+      }
+    } catch (_) {}
   }
 
   function reconcilePendingTrades(assetName, candles, currentCandleTime) {
     if (!candles || candles.length === 0) return;
-    loadLog();
-    if (pendingTrades.length === 0) return;
 
-    const remaining = [];
-    let updated = false;
+    try {
+      const rawPending = localStorage.getItem(PENDING_KEY);
+      let diskPending = rawPending ? JSON.parse(rawPending) : [];
+      if (diskPending.length === 0) return;
 
-    for (const trade of pendingTrades) {
-      if (trade.asset !== assetName) {
-        remaining.push(trade);
-        continue;
+      const rawLog = localStorage.getItem(LOG_KEY);
+      let diskLog = rawLog ? JSON.parse(rawLog) : [];
+
+      let pendingChanged = false;
+      let logChanged = false;
+
+      diskPending = diskPending.filter(trade => {
+        if (trade.asset !== assetName) return true;
+
+        const matchingCandle = candles.find(c => c.time === trade.minTime);
+        const isPast = currentCandleTime ? currentCandleTime > trade.minTime : Date.now() >= trade.minTime + 60000;
+
+        if (matchingCandle && isPast) {
+          if (!diskLog.some(t => t.id === trade.id)) {
+            let outcome = "TIE";
+            if (trade.dir === "CALL") {
+              outcome = matchingCandle.close > trade.entryPrice ? "WIN" : (matchingCandle.close < trade.entryPrice ? "LOSS" : "TIE");
+            } else if (trade.dir === "PUT") {
+              outcome = matchingCandle.close < trade.entryPrice ? "WIN" : (matchingCandle.close > trade.entryPrice ? "LOSS" : "TIE");
+            }
+
+            const d = new Date(trade.minTime);
+            const timeStr = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+
+            diskLog.unshift({
+              id: trade.id,
+              time: timeStr,
+              asset: trade.asset,
+              setup: trade.setup,
+              tier: trade.tier || (trade.setup && trade.setup.includes("STRONG") ? "STRONG" : "BIAS"),
+              score: trade.score || 0,
+              dir: trade.dir,
+              entry: trade.entryPrice,
+              exit: matchingCandle.close,
+              decimals: trade.decimals,
+              outcome: outcome,
+              minTime: trade.minTime
+            });
+            logChanged = true;
+          }
+          pendingChanged = true;
+          return false;
+        }
+
+        if (Date.now() - trade.minTime > 7200000) {
+          pendingChanged = true;
+          return false;
+        }
+
+        return true;
+      });
+
+      if (logChanged) {
+        if (diskLog.length > 1000) diskLog = diskLog.slice(0, 1000);
+        localStorage.setItem(LOG_KEY, JSON.stringify(diskLog));
+        tradeLog = diskLog;
       }
 
-      const matchingCandle = candles.find(c => c.time === trade.minTime);
-      const isPast = currentCandleTime ? currentCandleTime > trade.minTime : Date.now() >= trade.minTime + 60000;
-
-      if (matchingCandle && isPast) {
-        settleTrade(trade, matchingCandle.close);
-        updated = true;
-      } else if (Date.now() - trade.minTime > 7200000) {
-        updated = true;
-      } else {
-        remaining.push(trade);
+      if (pendingChanged) {
+        localStorage.setItem(PENDING_KEY, JSON.stringify(diskPending));
+        pendingTrades = diskPending;
       }
-    }
 
-    if (updated) {
-      pendingTrades = remaining;
-      saveLog(true);
-    }
+      if (logChanged || pendingChanged) {
+        if (syncChannel) syncChannel.postMessage({ type: "QX_SYNC_LOG_UPDATE" });
+        if (activeTab === "FORWARD") renderLogUI();
+      }
+    } catch (_) {}
   }
 
   // ==========================================
@@ -478,22 +499,17 @@
 
       if (state.activeSignal && state.activeSignal.dir !== "NONE" && !state.activeFlipped && state.evalMinute === finishedCandle.time) {
         const tradeId = `${activeAsset}_${minFloor}`;
-        loadLog();
-
-        if (!pendingTrades.some(t => t.id === tradeId) && !tradeLog.some(t => t.id === tradeId)) {
-          pendingTrades.push({
-            id: tradeId,
-            minTime: minFloor,
-            asset: activeAsset,
-            dir: state.activeSignal.dir,
-            tier: state.activeSignal.tier,
-            setup: state.activeSignal.setup,
-            score: state.activeScore,
-            entryPrice: price,
-            decimals: state.decimals !== undefined ? state.decimals : 3
-          });
-          saveLog(true);
-        }
+        atomicQueuePendingTrade({
+          id: tradeId,
+          minTime: minFloor,
+          asset: activeAsset,
+          dir: state.activeSignal.dir,
+          tier: state.activeSignal.tier,
+          setup: state.activeSignal.setup,
+          score: state.activeScore,
+          entryPrice: price,
+          decimals: state.decimals !== undefined ? state.decimals : 3
+        });
       }
 
       state.currentCandle = { time: minFloor, open: price, high: price, low: price, close: price };
@@ -659,7 +675,6 @@
     }
   }
 
-  // ON-DEMAND FORWARD SUMMARY COMPUTATION
   function computeForwardSummary(trades) {
     if (!trades || trades.length === 0) return null;
     let strongWins = 0, strongLosses = 0, strongTies = 0, strongCount = 0;
@@ -719,7 +734,6 @@
     };
   }
 
-  // ON-DEMAND BACKTEST COMPUTATION HELPER
   function computeBacktestData(candles) {
     if (!candles || candles.length < 25) return null;
 
@@ -937,23 +951,18 @@
 
   function exportTwoSheetWorkbookXlsx() {
     loadLog();
-
     const nowStr = new Date().toLocaleTimeString();
 
-    // ==============================================================
-    // SHEET 1: FORWARD.TEST SUMMARY DASHBOARD + TRANSACTIONS
-    // ==============================================================
+    // 1. Build Sheet 1: Forward Dashboard + Data
     const fwd = computeForwardSummary(tradeLog);
     let s1RowsXml = "";
     let s1Row = 1;
 
-    // Title Banner
     s1RowsXml += `<row r="${s1Row}" ht="28" customHeight="1">
       <c r="A${s1Row}" s="1" t="inlineStr"><is><t>FORWARD.TEST SESSION PERFORMANCE REPORT (LIVE 3-HOUR RUN)</t></is></c>
     </row>`;
     s1Row++;
 
-    // Metadata Card
     s1RowsXml += `<row r="${s1Row}" ht="20" customHeight="1">
       <c r="A${s1Row}" s="8" t="inlineStr"><is><t>Total Trades: ${tradeLog.length}</t></is></c>
       <c r="B${s1Row}" s="8" t="inlineStr"><is><t>Active Pairs: ${fwd ? fwd.pairCount : 0}</t></is></c>
@@ -964,11 +973,9 @@
     </row>`;
     s1Row++;
 
-    // Spacer
     s1RowsXml += `<row r="${s1Row}" ht="12" customHeight="1"></row>`;
     s1Row++;
 
-    // Summary Table Header (Navy Slate)
     s1RowsXml += `<row r="${s1Row}" ht="24" customHeight="1">
       <c r="A${s1Row}" s="2" t="inlineStr"><is><t>Tier</t></is></c>
       <c r="B${s1Row}" s="2" t="inlineStr"><is><t>Trades Taken</t></is></c>
@@ -980,7 +987,6 @@
     s1Row++;
 
     if (fwd) {
-      // Strong Row
       s1RowsXml += `<row r="${s1Row}" ht="20" customHeight="1">
         <c r="A${s1Row}" s="6" t="inlineStr"><is><t>Strong [S]</t></is></c>
         <c r="B${s1Row}" s="5"><v>${fwd.strongCount}</v></c>
@@ -991,7 +997,6 @@
       </row>`;
       s1Row++;
 
-      // Bias Row
       s1RowsXml += `<row r="${s1Row}" ht="20" customHeight="1">
         <c r="A${s1Row}" s="6" t="inlineStr"><is><t>Bias [B]</t></is></c>
         <c r="B${s1Row}" s="5"><v>${fwd.biasCount}</v></c>
@@ -1002,7 +1007,6 @@
       </row>`;
       s1Row++;
 
-      // Combined Total Row
       s1RowsXml += `<row r="${s1Row}" ht="22" customHeight="1">
         <c r="A${s1Row}" s="6" t="inlineStr"><is><t>Combined Total</t></is></c>
         <c r="B${s1Row}" s="5"><v>${fwd.totalCount}</v></c>
@@ -1013,11 +1017,9 @@
       </row>`;
       s1Row++;
 
-      // Spacer
       s1RowsXml += `<row r="${s1Row}" ht="12" customHeight="1"></row>`;
       s1Row++;
 
-      // Streak KPI Card
       s1RowsXml += `<row r="${s1Row}" ht="20" customHeight="1">
         <c r="A${s1Row}" s="8" t="inlineStr"><is><t>Streak Analysis</t></is></c>
         <c r="B${s1Row}" s="4" t="inlineStr"><is><t>Max Win Streak</t></is></c>
@@ -1034,17 +1036,14 @@
       s1Row++;
     }
 
-    // Spacer
     s1RowsXml += `<row r="${s1Row}" ht="14" customHeight="1"></row>`;
     s1Row++;
 
-    // Subheader
     s1RowsXml += `<row r="${s1Row}" ht="26" customHeight="1">
       <c r="A${s1Row}" s="1" t="inlineStr"><is><t>LIVE TRANSACTIONS &amp; EXECUTED FORWARD TRADES</t></is></c>
     </row>`;
     s1Row++;
 
-    // Forward Table Column Headers
     const s1Headers = ["Trade ID", "Time", "Asset", "Direction", "Tier", "Confluence Score", "Entry Price", "Exit Price", "Outcome"];
     s1RowsXml += `<row r="${s1Row}" ht="24" customHeight="1">`;
     s1Headers.forEach((h, idx) => {
@@ -1053,7 +1052,6 @@
     s1RowsXml += `</row>`;
     s1Row++;
 
-    // Forward Data Rows
     tradeLog.forEach(t => {
       const dec = t.decimals !== undefined ? t.decimals : 3;
       const outStyle = t.outcome === "WIN" ? 9 : (t.outcome === "LOSS" ? 10 : 3);
@@ -1072,7 +1070,6 @@
       s1Row++;
     });
 
-    // Sheet 1 XML with showGridLines="0"
     const sheet1Xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
   <sheetViews>
@@ -1092,9 +1089,7 @@
   <sheetData>${s1RowsXml}</sheetData>
 </worksheet>`;
 
-    // ==============================================================
-    // SHEET 2: BACKWARD.TEST SUMMARY + ROW-BY-ROW STATUS
-    // ==============================================================
+    // 2. Build Sheet 2: Backward Dashboard + Data
     const assetsToExport = [];
     if (assetVault.size > 0) {
       for (const [name, data] of assetVault.entries()) {
@@ -1114,13 +1109,11 @@
       const cList = item.candles;
       const bt = computeBacktestData(cList);
 
-      // Title Banner
       s2RowsXml += `<row r="${s2Row}" ht="28" customHeight="1">
         <c r="A${s2Row}" s="1" t="inlineStr"><is><t>BACKWARD.TEST SUMMARY REPORT - ${escapeXml(item.name)}</t></is></c>
       </row>`;
       s2Row++;
 
-      // Metadata Card
       s2RowsXml += `<row r="${s2Row}" ht="20" customHeight="1">
         <c r="A${s2Row}" s="8" t="inlineStr"><is><t>Asset: ${escapeXml(item.name)}</t></is></c>
         <c r="B${s2Row}" s="8" t="inlineStr"><is><t>TF: 1M Candle</t></is></c>
@@ -1131,11 +1124,9 @@
       </row>`;
       s2Row++;
 
-      // Spacer
       s2RowsXml += `<row r="${s2Row}" ht="12" customHeight="1"></row>`;
       s2Row++;
 
-      // Summary Table Header (Navy Slate)
       s2RowsXml += `<row r="${s2Row}" ht="24" customHeight="1">
         <c r="A${s2Row}" s="2" t="inlineStr"><is><t>Tier</t></is></c>
         <c r="B${s2Row}" s="2" t="inlineStr"><is><t>Setups Count</t></is></c>
@@ -1147,7 +1138,6 @@
       s2Row++;
 
       if (bt) {
-        // Strong Row
         s2RowsXml += `<row r="${s2Row}" ht="20" customHeight="1">
           <c r="A${s2Row}" s="6" t="inlineStr"><is><t>Strong [S]</t></is></c>
           <c r="B${s2Row}" s="5"><v>${bt.strongCount}</v></c>
@@ -1158,7 +1148,6 @@
         </row>`;
         s2Row++;
 
-        // Bias Row
         s2RowsXml += `<row r="${s2Row}" ht="20" customHeight="1">
           <c r="A${s2Row}" s="6" t="inlineStr"><is><t>Bias [B]</t></is></c>
           <c r="B${s2Row}" s="5"><v>${bt.biasCount}</v></c>
@@ -1169,7 +1158,6 @@
         </row>`;
         s2Row++;
 
-        // Combined Total Row
         s2RowsXml += `<row r="${s2Row}" ht="22" customHeight="1">
           <c r="A${s2Row}" s="6" t="inlineStr"><is><t>Combined Total</t></is></c>
           <c r="B${s2Row}" s="5"><v>${bt.totalCount}</v></c>
@@ -1180,11 +1168,9 @@
         </row>`;
         s2Row++;
 
-        // Spacer
         s2RowsXml += `<row r="${s2Row}" ht="12" customHeight="1"></row>`;
         s2Row++;
 
-        // Streak Analysis
         s2RowsXml += `<row r="${s2Row}" ht="20" customHeight="1">
           <c r="A${s2Row}" s="8" t="inlineStr"><is><t>Streak Analysis</t></is></c>
           <c r="B${s2Row}" s="4" t="inlineStr"><is><t>Max Win Streak</t></is></c>
@@ -1195,7 +1181,6 @@
         </row>`;
         s2Row++;
 
-        // Bar Accounting
         s2RowsXml += `<row r="${s2Row}" ht="20" customHeight="1">
           <c r="A${s2Row}" s="8" t="inlineStr"><is><t>Bar Accounting</t></is></c>
           <c r="B${s2Row}" s="4" t="inlineStr"><is><t>Traded Setups</t></is></c>
@@ -1212,17 +1197,14 @@
         s2Row++;
       }
 
-      // Spacer
       s2RowsXml += `<row r="${s2Row}" ht="14" customHeight="1"></row>`;
       s2Row++;
 
-      // Subheader
       s2RowsXml += `<row r="${s2Row}" ht="26" customHeight="1">
         <c r="A${s2Row}" s="1" t="inlineStr"><is><t>HISTORICAL 1-MINUTE RAW CANDLES &amp; ROW-BY-ROW SIGNAL STATUS</t></is></c>
       </row>`;
       s2Row++;
 
-      // Candle Headers
       const s2Headers = [
         "Timestamp", "Time", "Asset", "Open", "High", "Low", "Close", 
         "RSI (14)", "Support (20-bar)", "Resistance (20-bar)", 
@@ -1235,7 +1217,6 @@
       s2RowsXml += `</row>`;
       s2Row++;
 
-      // Candle Data Rows
       for (let i = 0; i < cList.length; i++) {
         const c = cList[i];
         const sub = cList.slice(0, i + 1);
@@ -1310,7 +1291,6 @@
       s2Row++;
     });
 
-    // Sheet 2 XML with showGridLines="0"
     const sheet2Xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
   <sheetViews>
@@ -1333,7 +1313,7 @@
   <sheetData>${s2RowsXml}</sheetData>
 </worksheet>`;
 
-    // OpenXML Package Files
+    // OpenXML Package Structure
     const files = [
       {
         name: "[Content_Types].xml",
@@ -1663,7 +1643,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.34</small>
+          <strong>QX Assistant</strong> <small>v1.4.35</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-sound-strong" class="qx-audio-btn" title="Toggle Strong Alerts (Triple Fanfare x3)">${strongSoundEnabled ? "S:🔊" : "S:🔇"}</button>
@@ -1893,7 +1873,9 @@
       pendingTrades = [];
       currentPairFilter = "ALL";
       currentTierFilter = "ALL";
-      saveLog(true);
+      localStorage.setItem(LOG_KEY, JSON.stringify([]));
+      localStorage.setItem(PENDING_KEY, JSON.stringify([]));
+      if (syncChannel) syncChannel.postMessage({ type: "QX_SYNC_LOG_UPDATE" });
       renderLogUI();
     });
 

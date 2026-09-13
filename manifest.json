@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.4.34",
-  "description": "FROZEN BASELINE: Executive dashboard .xlsx export, dual Forward/Backward summary KPI cards, borderless canvas, 1000-trade buffer, and cross-window sync.",
+  "version": "1.4.35",
+  "description": "Read-only assistant with atomic multi-window trade synchronization, race-condition immunity, and executive .xlsx dashboard export.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",
