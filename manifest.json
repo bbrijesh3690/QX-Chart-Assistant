@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.4.27",
-  "description": "Read-only assistant with dual max consecutive win/loss streaks in Backward.test, Forward.test compound filters, and signal renew countdown.",
+  "version": "1.4.28",
+  "description": "Read-only assistant with wick-aware S/R backtest engine, explicit neutral skip counting, Forward.test/Backward.test tabs, and macOS minimize dot.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",

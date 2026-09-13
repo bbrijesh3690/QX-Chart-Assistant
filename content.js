@@ -1,7 +1,7 @@
 (function () {
-  const VAULT_KEY = "__QX_ASSET_VAULT_V24__";
-  const LOG_KEY = "__QX_SHARED_LOG_V12__";
-  const PENDING_KEY = "__QX_SHARED_PENDING_V10__";
+  const VAULT_KEY = "__QX_ASSET_VAULT_V25__";
+  const LOG_KEY = "__QX_SHARED_LOG_V13__";
+  const PENDING_KEY = "__QX_SHARED_PENDING_V11__";
 
   const assetVault = new Map();
   const globalHistoryPool = [];
@@ -582,6 +582,48 @@
     };
   }
 
+  // WICK-AWARE CONFLUENCE EVALUATION FOR BACKTEST
+  function evaluateBacktestConfluence(m15Trend, m5Trend, rsi, candle, sr) {
+    let callScore = 0;
+    let putScore = 0;
+
+    if (m15Trend === "Bullish") callScore += 1.5;
+    else if (m15Trend === "Bearish") putScore += 1.5;
+
+    if (m5Trend === "Bullish") callScore += 1.0;
+    else if (m5Trend === "Bearish") putScore += 1.0;
+
+    if (rsi !== null) {
+      if (rsi <= 32) callScore += 1.5;
+      else if (rsi >= 68) putScore += 1.5;
+      else if (rsi > 50 && m5Trend === "Bullish") callScore += 0.5;
+      else if (rsi < 50 && m5Trend === "Bearish") putScore += 0.5;
+    }
+
+    if (sr.s !== null && sr.r !== null) {
+      const range = sr.r - sr.s;
+      if (range > 0) {
+        // Use Candle Low for Support touch, Candle High for Resistance touch
+        const distToSupport = (candle.low - sr.s) / range;
+        const distToResistance = (sr.r - candle.high) / range;
+        if (distToSupport < 0.15) callScore += 1.0;
+        if (distToResistance < 0.15) putScore += 1.0;
+      }
+    }
+
+    if (callScore >= 3.5 && callScore > putScore) {
+      return { setup: "STRONG BUY", score: Math.min(5, Math.round(callScore)), color: "#10b981", dir: "CALL", tier: "STRONG" };
+    } else if (putScore >= 3.5 && putScore > callScore) {
+      return { setup: "STRONG PUT", score: Math.min(5, Math.round(putScore)), color: "#ef4444", dir: "PUT", tier: "STRONG" };
+    } else if (callScore >= 2.5 && callScore > putScore) {
+      return { setup: "CALL Bias", score: Math.round(callScore), color: "#34d399", dir: "CALL", tier: "BIAS" };
+    } else if (putScore >= 2.5 && putScore > callScore) {
+      return { setup: "PUT Bias", score: Math.round(putScore), color: "#f87171", dir: "PUT", tier: "BIAS" };
+    } else {
+      return { setup: "Neutral", score: Math.max(callScore, putScore).toFixed(0), color: "#94a3b8", dir: "NONE", tier: "NONE" };
+    }
+  }
+
   function evaluateConfluence(m15Trend, m5Trend, rsi, price, sr) {
     let callScore = 0;
     let putScore = 0;
@@ -623,7 +665,7 @@
   }
 
   // ==========================================
-  // BACKTEST: DUAL WIN/LOSS STREAKS
+  // BACKTEST ENGINE WITH WICKS & SKIPPED COUNTS
   // ==========================================
   function runBacktestForActiveAsset() {
     const candles = state.candles1m;
@@ -642,11 +684,16 @@
 
     let strongWins = 0, strongLosses = 0, strongTies = 0, strongCount = 0;
     let biasWins = 0, biasLosses = 0, biasTies = 0, biasCount = 0;
+    let skippedNeutral = 0;
     let currentWinStreak = 0, maxWinStreak = 0;
     let currentLossStreak = 0, maxLossStreak = 0;
 
-    for (let i = 20; i < candles.length - 1; i++) {
+    const warmupCount = 20;
+    const evaluatedTotal = candles.length - 1 - warmupCount;
+
+    for (let i = warmupCount; i < candles.length - 1; i++) {
       const subCandles = candles.slice(0, i + 1);
+      const curCandle = subCandles[subCandles.length - 1];
       const m5 = getAggregate(subCandles, null, 5);
       const m15 = getAggregate(subCandles, null, 15);
       const rsi = calcRSI(subCandles, 14);
@@ -665,10 +712,11 @@
         trend5m = cur5.close >= prev5.close ? "Bullish" : "Bearish";
       }
 
-      const price = subCandles[subCandles.length - 1].close;
-      const verdict = evaluateConfluence(trend15m, trend5m, rsi, price, sr);
+      const verdict = evaluateBacktestConfluence(trend15m, trend5m, rsi, curCandle, sr);
 
-      if (verdict.dir !== "NONE") {
+      if (verdict.dir === "NONE") {
+        skippedNeutral++;
+      } else {
         const targetCandle = candles[i + 1];
         const entry = targetCandle.open;
         const exit = targetCandle.close;
@@ -692,7 +740,6 @@
           else biasTies++;
         }
 
-        // Dual Streak Tracker
         if (outcome === "WIN") {
           currentWinStreak++;
           if (currentWinStreak > maxWinStreak) maxWinStreak = currentWinStreak;
@@ -724,6 +771,8 @@
       asset: activeAsset,
       candlesCount: candles.length,
       spanHours: spanHours,
+      evaluatedTotal: evaluatedTotal,
+      skippedNeutral: skippedNeutral,
       strongCount: strongCount,
       strongWins: strongWins,
       strongLosses: strongLosses,
@@ -793,9 +842,14 @@
           </tr>
         </tbody>
       </table>
-      <div class="qx-bt-mini-footer">
-        <span>🔥 Max Win: <strong style="color: #34d399;">${b.maxWinStreak}W</strong> | ⚠️ Max Loss: <strong style="color: #f87171;">${b.maxLossStreak}L</strong></span>
-        <span style="color: #64748b;">${b.candlesCount} bars (~${b.spanHours}h) • ${b.testedAt}</span>
+      <div class="qx-bt-mini-footer" style="flex-direction: column; align-items: flex-start; gap: 2px;">
+        <div style="width: 100%; display: flex; justify-content: space-between;">
+          <span>🔥 Max Win: <strong style="color: #34d399;">${b.maxWinStreak}W</strong> | ⚠️ Max Loss: <strong style="color: #f87171;">${b.maxLossStreak}L</strong></span>
+          <span style="color: #64748b;">${b.candlesCount} bars (~${b.spanHours}h)</span>
+        </div>
+        <div style="color: #64748b; font-size: 8.5px;">
+          📊 Accounting: ${b.totalCount} Traded | ${b.skippedNeutral} Neutral Skipped | 20 Warmup
+        </div>
       </div>
     `;
   }
@@ -908,7 +962,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.27</small>
+          <strong>QX Assistant</strong> <small>v1.4.28</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-sound-strong" class="qx-audio-btn" title="Toggle Strong Alerts (Triple Fanfare x3)">${strongSoundEnabled ? "S:🔊" : "S:🔇"}</button>
@@ -1232,7 +1286,6 @@
     const scoreEl = document.getElementById("qx-ui-score");
     const advisoryEl = document.getElementById("qx-ui-advisory");
 
-    // WINDOW A: 55s - 59s Lock + 58s Strict Gate
     if (msInMinute >= 55000) {
       if (signalLbl) signalLbl.textContent = "Signal:";
 
@@ -1272,9 +1325,7 @@
           : "#2d3748";
         scoreEl.style.color = "#ffffff";
       }
-    }
-    // WINDOW B: 00s - 54s Active Candle Running (Signal Renew in Xs Countdown)
-    else {
+    } else {
       const renewCountdown = 55 - sec;
       if (signalLbl) {
         signalLbl.textContent = `Signal (Renew in ${renewCountdown}s):`;
