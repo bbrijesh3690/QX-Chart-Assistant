@@ -623,7 +623,7 @@
   }
 
   // ==========================================
-  // PERSISTENT PER-ASSET BACKTEST ENGINE
+  // BACKTEST: DUAL WIN/LOSS STREAKS
   // ==========================================
   function runBacktestForActiveAsset() {
     const candles = state.candles1m;
@@ -642,7 +642,8 @@
 
     let strongWins = 0, strongLosses = 0, strongTies = 0, strongCount = 0;
     let biasWins = 0, biasLosses = 0, biasTies = 0, biasCount = 0;
-    let currentStreak = 0, maxStreak = 0;
+    let currentWinStreak = 0, maxWinStreak = 0;
+    let currentLossStreak = 0, maxLossStreak = 0;
 
     for (let i = 20; i < candles.length - 1; i++) {
       const subCandles = candles.slice(0, i + 1);
@@ -691,11 +692,15 @@
           else biasTies++;
         }
 
+        // Dual Streak Tracker
         if (outcome === "WIN") {
-          currentStreak++;
-          if (currentStreak > maxStreak) maxStreak = currentStreak;
+          currentWinStreak++;
+          if (currentWinStreak > maxWinStreak) maxWinStreak = currentWinStreak;
+          currentLossStreak = 0;
         } else if (outcome === "LOSS") {
-          currentStreak = 0;
+          currentLossStreak++;
+          if (currentLossStreak > maxLossStreak) maxLossStreak = currentLossStreak;
+          currentWinStreak = 0;
         }
       }
     }
@@ -733,7 +738,8 @@
       totalWins: totalWins,
       totalLosses: totalLosses,
       totalWr: totalWr,
-      maxStreak: maxStreak,
+      maxWinStreak: maxWinStreak,
+      maxLossStreak: maxLossStreak,
       testedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     });
 
@@ -788,7 +794,7 @@
         </tbody>
       </table>
       <div class="qx-bt-mini-footer">
-        <span>🔥 Max Streak: <strong>${b.maxStreak} Wins</strong></span>
+        <span>🔥 Max Win: <strong style="color: #34d399;">${b.maxWinStreak}W</strong> | ⚠️ Max Loss: <strong style="color: #f87171;">${b.maxLossStreak}L</strong></span>
         <span style="color: #64748b;">${b.candlesCount} bars (~${b.spanHours}h) • ${b.testedAt}</span>
       </div>
     `;
@@ -902,7 +908,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.26</small>
+          <strong>QX Assistant</strong> <small>v1.4.27</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-sound-strong" class="qx-audio-btn" title="Toggle Strong Alerts (Triple Fanfare x3)">${strongSoundEnabled ? "S:🔊" : "S:🔇"}</button>
@@ -930,8 +936,7 @@
         <div class="qx-section">
           <div class="qx-section-title">SIGNAL CONFLUENCE</div>
           <div class="qx-row">
-            <!-- DYNAMIC RENEWAL LABEL -->
-            <span id="qx-ui-signal-lbl" class="qx-label">Signal <span class="qx-renew-timer">(Renew in 55s)</span>:</span>
+            <span class="qx-label" id="qx-lbl-signal">Signal:</span>
             <strong id="qx-ui-setup" class="qx-accent">Analyzing...</strong>
           </div>
           <div class="qx-row">
@@ -1222,18 +1227,14 @@
       }
     }
 
-    const signalLbl = document.getElementById("qx-ui-signal-lbl");
+    const signalLbl = document.getElementById("qx-lbl-signal");
     const signalEl = document.getElementById("qx-ui-setup");
     const scoreEl = document.getElementById("qx-ui-score");
     const advisoryEl = document.getElementById("qx-ui-advisory");
 
-    // ==============================================================
-    // WINDOW A: 55,000ms - 59,999ms (Lock at 55s + 3x Chimes + Flip Gate)
-    // ==============================================================
+    // WINDOW A: 55s - 59s Lock + 58s Strict Gate
     if (msInMinute >= 55000) {
-      if (signalLbl) {
-        signalLbl.innerHTML = `Signal <span class="qx-renew-timer qx-renew-locked">(Renew in 0s)</span>:`;
-      }
+      if (signalLbl) signalLbl.textContent = "Signal:";
 
       if (state.evalMinute !== currentMinFloor) {
         state.activeSignal = Object.assign({}, liveVerdict);
@@ -1260,7 +1261,6 @@
         }
       }
 
-      // [LOCKED] badge appears dynamically when locked
       if (signalEl && state.activeSignal) {
         signalEl.textContent = `${state.activeSignal.setup} [LOCKED]`;
         signalEl.style.color = state.activeSignal.color;
@@ -1272,20 +1272,17 @@
           : "#2d3748";
         scoreEl.style.color = "#ffffff";
       }
-    } 
-    // ==============================================================
-    // WINDOW B: 00,000ms - 54,999ms (Active Candle Running)
-    // ==============================================================
+    }
+    // WINDOW B: 00s - 54s Active Candle Running (Signal Renew in Xs Countdown)
     else {
+      const renewCountdown = 55 - sec;
       if (signalLbl) {
-        const renewSec = 55 - sec;
-        signalLbl.innerHTML = `Signal <span class="qx-renew-timer">(Renew in ${renewSec}s)</span>:`;
+        signalLbl.textContent = `Signal (Renew in ${renewCountdown}s):`;
       }
 
       if (signalEl) {
         if (state.activeSignal && state.activeSignal.dir !== "NONE") {
-          // [Active] is removed; displays clean setup name
-          signalEl.textContent = state.activeSignal.setup;
+          signalEl.textContent = `${state.activeSignal.setup}`;
           signalEl.style.color = state.activeSignal.color;
         } else {
           signalEl.textContent = `Analyzing...`;

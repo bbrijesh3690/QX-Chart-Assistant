@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.4.26",
-  "description": "Read-only assistant with Signal (Renew in Xs) dynamic label, clean unbadged active state, dynamic [LOCKED] badge, and dual Forward/Backward tests.",
+  "version": "1.4.27",
+  "description": "Read-only assistant with dual max consecutive win/loss streaks in Backward.test, Forward.test compound filters, and signal renew countdown.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",
