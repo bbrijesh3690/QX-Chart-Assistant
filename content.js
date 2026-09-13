@@ -1,7 +1,7 @@
 (function () {
-  const VAULT_KEY = "__QX_ASSET_VAULT_V25__";
-  const LOG_KEY = "__QX_SHARED_LOG_V13__";
-  const PENDING_KEY = "__QX_SHARED_PENDING_V11__";
+  const VAULT_KEY = "__QX_ASSET_VAULT_V26__";
+  const LOG_KEY = "__QX_SHARED_LOG_V14__";
+  const PENDING_KEY = "__QX_SHARED_PENDING_V12__";
 
   const assetVault = new Map();
   const globalHistoryPool = [];
@@ -93,7 +93,8 @@
       outcome: outcome
     });
 
-    if (tradeLog.length > 40) tradeLog.pop();
+    // 1,000 Trades Capacity for Long 3-Hour Multi-Asset Runs
+    if (tradeLog.length > 1000) tradeLog.pop();
     saveLog(true);
     if (activeTab === "FORWARD") renderLogUI();
   }
@@ -582,7 +583,6 @@
     };
   }
 
-  // WICK-AWARE CONFLUENCE EVALUATION FOR BACKTEST
   function evaluateBacktestConfluence(m15Trend, m5Trend, rsi, candle, sr) {
     let callScore = 0;
     let putScore = 0;
@@ -603,7 +603,6 @@
     if (sr.s !== null && sr.r !== null) {
       const range = sr.r - sr.s;
       if (range > 0) {
-        // Use Candle Low for Support touch, Candle High for Resistance touch
         const distToSupport = (candle.low - sr.s) / range;
         const distToResistance = (sr.r - candle.high) / range;
         if (distToSupport < 0.15) callScore += 1.0;
@@ -662,6 +661,150 @@
     } else {
       return { setup: "Neutral", score: Math.max(callScore, putScore).toFixed(0), color: "#94a3b8", dir: "NONE", tier: "NONE" };
     }
+  }
+
+  // ==============================================================
+  // 2-SHEET EXCEL WORKBOOK GENERATOR (Forward Trades + Candles)
+  // ==============================================================
+  function escapeXml(str) {
+    if (str === null || str === undefined) return "";
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&apos;");
+  }
+
+  function exportTwoSheetWorkbook() {
+    loadLog();
+
+    // 1. Build Sheet 1: Forward.test Trades
+    let sheet1Rows = `
+      <Row>
+        <Cell><Data ss:Type="String">Trade ID</Data></Cell>
+        <Cell><Data ss:Type="String">Time</Data></Cell>
+        <Cell><Data ss:Type="String">Asset</Data></Cell>
+        <Cell><Data ss:Type="String">Direction</Data></Cell>
+        <Cell><Data ss:Type="String">Tier</Data></Cell>
+        <Cell><Data ss:Type="String">Confluence Score</Data></Cell>
+        <Cell><Data ss:Type="String">Entry Price</Data></Cell>
+        <Cell><Data ss:Type="String">Exit Price</Data></Cell>
+        <Cell><Data ss:Type="String">Outcome</Data></Cell>
+      </Row>
+    `;
+
+    tradeLog.forEach(t => {
+      const dec = t.decimals !== undefined ? t.decimals : 3;
+      sheet1Rows += `
+        <Row>
+          <Cell><Data ss:Type="String">${escapeXml(t.id)}</Data></Cell>
+          <Cell><Data ss:Type="String">${escapeXml(t.time)}</Data></Cell>
+          <Cell><Data ss:Type="String">${escapeXml(t.asset)}</Data></Cell>
+          <Cell><Data ss:Type="String">${escapeXml(t.dir)}</Data></Cell>
+          <Cell><Data ss:Type="String">${escapeXml(t.tier)}</Data></Cell>
+          <Cell><Data ss:Type="Number">${t.score || 0}</Data></Cell>
+          <Cell><Data ss:Type="Number">${Number(t.entry.toFixed(dec))}</Data></Cell>
+          <Cell><Data ss:Type="Number">${Number(t.exit.toFixed(dec))}</Data></Cell>
+          <Cell><Data ss:Type="String">${escapeXml(t.outcome)}</Data></Cell>
+        </Row>
+      `;
+    });
+
+    // 2. Build Sheet 2: Historical 1M Candles (Across all assets in vault)
+    let sheet2Rows = `
+      <Row>
+        <Cell><Data ss:Type="String">Timestamp</Data></Cell>
+        <Cell><Data ss:Type="String">Time</Data></Cell>
+        <Cell><Data ss:Type="String">Asset</Data></Cell>
+        <Cell><Data ss:Type="String">Open</Data></Cell>
+        <Cell><Data ss:Type="String">High</Data></Cell>
+        <Cell><Data ss:Type="String">Low</Data></Cell>
+        <Cell><Data ss:Type="String">Close</Data></Cell>
+        <Cell><Data ss:Type="String">RSI (14)</Data></Cell>
+        <Cell><Data ss:Type="String">Support (20-bar)</Data></Cell>
+        <Cell><Data ss:Type="String">Resistance (20-bar)</Data></Cell>
+      </Row>
+    `;
+
+    const assetsToExport = [];
+    if (assetVault.size > 0) {
+      for (const [name, data] of assetVault.entries()) {
+        if (data.candles1m && data.candles1m.length > 0) {
+          assetsToExport.push({ name, candles: data.candles1m, dec: data.decimals || 3 });
+        }
+      }
+    }
+    if (assetsToExport.length === 0 && state.candles1m && state.candles1m.length > 0) {
+      assetsToExport.push({ name: activeAsset, candles: state.candles1m, dec: state.decimals || 3 });
+    }
+
+    assetsToExport.forEach(item => {
+      const cList = item.candles;
+      for (let i = 0; i < cList.length; i++) {
+        const c = cList[i];
+        const sub = cList.slice(0, i + 1);
+        const rsiVal = i >= 14 ? calcRSI(sub, 14) : null;
+        const srVal = i >= 5 ? calcSR(sub) : { s: null, r: null };
+        const d = new Date(c.time);
+        const timeStr = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+
+        sheet2Rows += `
+          <Row>
+            <Cell><Data ss:Type="Number">${c.time}</Data></Cell>
+            <Cell><Data ss:Type="String">${timeStr}</Data></Cell>
+            <Cell><Data ss:Type="String">${escapeXml(item.name)}</Data></Cell>
+            <Cell><Data ss:Type="Number">${Number(c.open.toFixed(item.dec))}</Data></Cell>
+            <Cell><Data ss:Type="Number">${Number(c.high.toFixed(item.dec))}</Data></Cell>
+            <Cell><Data ss:Type="Number">${Number(c.low.toFixed(item.dec))}</Data></Cell>
+            <Cell><Data ss:Type="Number">${Number(c.close.toFixed(item.dec))}</Data></Cell>
+            <Cell><Data ss:Type="${rsiVal !== null ? 'Number' : 'String'}">${rsiVal !== null ? Number(rsiVal.toFixed(1)) : '--'}</Data></Cell>
+            <Cell><Data ss:Type="${srVal.s !== null ? 'Number' : 'String'}">${srVal.s !== null ? Number(srVal.s.toFixed(item.dec)) : '--'}</Data></Cell>
+            <Cell><Data ss:Type="${srVal.r !== null ? 'Number' : 'String'}">${srVal.r !== null ? Number(srVal.r.toFixed(item.dec)) : '--'}</Data></Cell>
+          </Row>
+        `;
+      }
+    });
+
+    // 3. Assemble Excel 2003 XML Workbook
+    const xml = `<?xml version="1.0"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:o="urn:schemas-microsoft-com:office:office"
+ xmlns:x="urn:schemas-microsoft-com:office:excel"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:html="http://www.w3.org/TR/REC-html40">
+ <Styles>
+  <Style ss:ID="Default" ss:Name="Normal">
+   <Alignment ss:Vertical="Center"/>
+   <Borders/>
+   <Font ss:FontName="Calibri" x:Family="Swiss" ss:Size="11" ss:Color="#000000"/>
+  </Style>
+ </Styles>
+ <Worksheet ss:Name="Forward.test Trades">
+  <Table>
+   ${sheet1Rows}
+  </Table>
+ </Worksheet>
+ <Worksheet ss:Name="Historical 1M Candles">
+  <Table>
+   ${sheet2Rows}
+  </Table>
+ </Worksheet>
+</Workbook>`;
+
+    const blob = new Blob([xml], { type: "application/vnd.ms-excel;charset=utf-8" });
+    const now = new Date();
+    const dateStamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+    const fileName = `QX_Session_Workbook_${dateStamp}.xls`;
+
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(link.href);
   }
 
   // ==========================================
@@ -962,7 +1105,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.28</small>
+          <strong>QX Assistant</strong> <small>v1.4.29</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-sound-strong" class="qx-audio-btn" title="Toggle Strong Alerts (Triple Fanfare x3)">${strongSoundEnabled ? "S:🔊" : "S:🔇"}</button>
@@ -1027,6 +1170,7 @@
             </div>
             <div id="qx-forward-controls" class="qx-tab-actions">
               <span id="qx-log-summary" class="qx-log-pill">0W - 0L (0%)</span>
+              <button id="qx-btn-export-log" class="qx-export-btn" title="Export Excel Workbook with Forward Trades & Historical Candles">Export</button>
               <button id="qx-btn-clear-log" class="qx-clear-btn" title="Reset Shared Session Log Across Windows">Clr</button>
             </div>
             <div id="qx-backtest-controls" class="qx-tab-actions qx-hidden">
@@ -1148,6 +1292,11 @@
     const btnRunBt = document.getElementById("qx-btn-run-bt");
     btnRunBt.addEventListener("click", () => {
       runBacktestForActiveAsset();
+    });
+
+    const btnExport = document.getElementById("qx-btn-export-log");
+    btnExport.addEventListener("click", () => {
+      exportTwoSheetWorkbook();
     });
 
     const pairFilterEl = document.getElementById("qx-log-pair-filter");

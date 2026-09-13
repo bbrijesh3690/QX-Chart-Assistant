@@ -325,6 +325,25 @@
   box-shadow: 0 0 8px rgba(16, 185, 129, 0.4);
 }
 
+/* SLEEK ACTION BUTTONS */
+.qx-export-btn {
+  background: #1d4ed8;
+  border: 1px solid #3b82f6;
+  color: #ffffff;
+  font-size: 9.5px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 4px;
+  cursor: pointer;
+  line-height: 1.2;
+  transition: all 0.15s ease;
+}
+.qx-export-btn:hover {
+  background: #2563eb;
+  border-color: #60a5fa;
+  box-shadow: 0 0 8px rgba(59, 130, 246, 0.4);
+}
+
 .qx-clear-btn {
   background: #334155;
   border: 1px solid #475569;
