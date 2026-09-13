@@ -1,7 +1,7 @@
 (function () {
-  const VAULT_KEY = "__QX_ASSET_VAULT_V23__";
-  const LOG_KEY = "__QX_SHARED_LOG_V11__";
-  const PENDING_KEY = "__QX_SHARED_PENDING_V9__";
+  const VAULT_KEY = "__QX_ASSET_VAULT_V24__";
+  const LOG_KEY = "__QX_SHARED_LOG_V12__";
+  const PENDING_KEY = "__QX_SHARED_PENDING_V10__";
 
   const assetVault = new Map();
   const globalHistoryPool = [];
@@ -821,7 +821,6 @@
       tierFilterEl.value = currentTierFilter;
     }
 
-    // Compound Filtering (Pair AND Tier)
     let displayList = tradeLog;
     if (currentPairFilter !== "ALL") {
       displayList = displayList.filter(t => t.asset === currentPairFilter);
@@ -903,7 +902,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.25</small>
+          <strong>QX Assistant</strong> <small>v1.4.26</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-sound-strong" class="qx-audio-btn" title="Toggle Strong Alerts (Triple Fanfare x3)">${strongSoundEnabled ? "S:🔊" : "S:🔇"}</button>
@@ -931,7 +930,8 @@
         <div class="qx-section">
           <div class="qx-section-title">SIGNAL CONFLUENCE</div>
           <div class="qx-row">
-            <span class="qx-label">Signal:</span>
+            <!-- DYNAMIC RENEWAL LABEL -->
+            <span id="qx-ui-signal-lbl" class="qx-label">Signal <span class="qx-renew-timer">(Renew in 55s)</span>:</span>
             <strong id="qx-ui-setup" class="qx-accent">Analyzing...</strong>
           </div>
           <div class="qx-row">
@@ -1222,11 +1222,19 @@
       }
     }
 
+    const signalLbl = document.getElementById("qx-ui-signal-lbl");
     const signalEl = document.getElementById("qx-ui-setup");
     const scoreEl = document.getElementById("qx-ui-score");
     const advisoryEl = document.getElementById("qx-ui-advisory");
 
+    // ==============================================================
+    // WINDOW A: 55,000ms - 59,999ms (Lock at 55s + 3x Chimes + Flip Gate)
+    // ==============================================================
     if (msInMinute >= 55000) {
+      if (signalLbl) {
+        signalLbl.innerHTML = `Signal <span class="qx-renew-timer qx-renew-locked">(Renew in 0s)</span>:`;
+      }
+
       if (state.evalMinute !== currentMinFloor) {
         state.activeSignal = Object.assign({}, liveVerdict);
         state.activeScore = liveVerdict.score;
@@ -1252,6 +1260,7 @@
         }
       }
 
+      // [LOCKED] badge appears dynamically when locked
       if (signalEl && state.activeSignal) {
         signalEl.textContent = `${state.activeSignal.setup} [LOCKED]`;
         signalEl.style.color = state.activeSignal.color;
@@ -1263,10 +1272,20 @@
           : "#2d3748";
         scoreEl.style.color = "#ffffff";
       }
-    } else {
+    } 
+    // ==============================================================
+    // WINDOW B: 00,000ms - 54,999ms (Active Candle Running)
+    // ==============================================================
+    else {
+      if (signalLbl) {
+        const renewSec = 55 - sec;
+        signalLbl.innerHTML = `Signal <span class="qx-renew-timer">(Renew in ${renewSec}s)</span>:`;
+      }
+
       if (signalEl) {
         if (state.activeSignal && state.activeSignal.dir !== "NONE") {
-          signalEl.textContent = `${state.activeSignal.setup} [Active]`;
+          // [Active] is removed; displays clean setup name
+          signalEl.textContent = state.activeSignal.setup;
           signalEl.style.color = state.activeSignal.color;
         } else {
           signalEl.textContent = `Analyzing...`;

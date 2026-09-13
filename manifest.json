@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.4.25",
-  "description": "Read-only assistant with dual in-column filters for Pair and Strong/Bias Tier in Forward.test, Backward.test cache, and macOS traffic-light minimize.",
+  "version": "1.4.26",
+  "description": "Read-only assistant with Signal (Renew in Xs) dynamic label, clean unbadged active state, dynamic [LOCKED] badge, and dual Forward/Backward tests.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",

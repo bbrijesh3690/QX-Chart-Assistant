@@ -4,7 +4,7 @@
   right: 20px;
   min-width: 330px;
   width: max-content;
-  max-width: 420px;
+  max-width: 430px;
   background: #151821;
   color: #e2e8f0;
   border: 1px solid #2d3748;
@@ -158,6 +158,19 @@
   color: #94a3b8;
   white-space: nowrap;
 }
+
+/* RENEWAL LIVE TIMER IN LABEL */
+.qx-renew-timer {
+  font-size: 9.5px;
+  color: #64748b;
+  font-family: monospace;
+  font-weight: 600;
+}
+.qx-renew-locked {
+  color: #f87171 !important;
+  font-weight: 700;
+}
+
 .qx-price {
   font-size: 15px;
   font-weight: 700;
@@ -400,7 +413,6 @@
   font-size: 10.5px;
 }
 
-/* IN-COLUMN PAIR & TIER FILTER DROPDOWNS */
 .qx-th-filter {
   background: #151821;
   color: #38bdf8;
@@ -422,7 +434,6 @@
   background: #1e293b;
 }
 
-/* S / B TIER MICRO-BADGES */
 .qx-tier-badge {
   display: inline-block;
   font-size: 8px;
