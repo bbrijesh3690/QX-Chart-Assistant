@@ -1,14 +1,11 @@
 (function () {
-  const VAULT_KEY = "__QX_ASSET_VAULT_V16__";
-  const LOG_KEY = "__QX_FORWARD_LOG_V4__";
-  const PENDING_KEY = "__QX_PENDING_TRADES_V2__";
+  const VAULT_KEY = "__QX_ASSET_VAULT_V17__";
+  const LOG_KEY = "__QX_FORWARD_LOG_V5__";
+  const PENDING_KEY = "__QX_PENDING_TRADES_V3__";
 
   const assetVault = new Map();
   const globalHistoryPool = [];
 
-  // ==========================================
-  // RETROACTIVE FORWARD-TEST ENGINE & FILTER
-  // ==========================================
   let tradeLog = [];
   let pendingTrades = [];
   let currentLogFilter = "ALL";
@@ -46,6 +43,8 @@
       time: timeStr,
       asset: trade.asset,
       setup: trade.setup,
+      tier: trade.tier || (trade.setup && trade.setup.includes("STRONG") ? "STRONG" : "BIAS"),
+      score: trade.score || 0,
       dir: trade.dir,
       entry: trade.entryPrice,
       exit: exitPrice,
@@ -90,7 +89,7 @@
   }
 
   // ==========================================
-  // LOUD WEB AUDIO SYNTHESIZER (3X REPEATS)
+  // WEB AUDIO SYNTHESIZER
   // ==========================================
   let audioCtx = null;
   let masterComp = null;
@@ -429,6 +428,7 @@
             dir: state.activeSignal.dir,
             tier: state.activeSignal.tier,
             setup: state.activeSignal.setup,
+            score: state.activeScore,
             entryPrice: price,
             decimals: state.decimals !== undefined ? state.decimals : 3
           });
@@ -558,7 +558,7 @@
   }
 
   // ==========================================
-  // RENDER LOG UI & PAIR FILTER RECALCULATION
+  // RENDER LOG UI WITH S/B TIER BADGES
   // ==========================================
   function renderLogUI() {
     const bodyEl = document.getElementById("qx-log-body");
@@ -566,7 +566,6 @@
     const filterEl = document.getElementById("qx-log-pair-filter");
     if (!bodyEl || !summaryEl) return;
 
-    // 1. Maintain & Update Dynamic Filter Options
     if (filterEl) {
       const distinctPairs = Array.from(new Set(tradeLog.map(t => t.asset))).filter(Boolean);
       const existingOptions = Array.from(filterEl.options).map(o => o.value);
@@ -580,7 +579,6 @@
       currentLogFilter = filterEl.value;
     }
 
-    // 2. Filter Active Trades
     const displayList = currentLogFilter === "ALL" 
       ? tradeLog 
       : tradeLog.filter(t => t.asset === currentLogFilter);
@@ -592,7 +590,6 @@
       return;
     }
 
-    // 3. Dynamic Win-Rate Recalculation for Filtered View
     let wins = 0;
     let losses = 0;
     let ties = 0;
@@ -609,7 +606,6 @@
     summaryEl.textContent = `${wins}W - ${losses}L (${wr}%)`;
     summaryEl.style.background = wr >= 65 ? "#065f46" : (wr >= 50 ? "#2d3748" : "#7f1d1d");
 
-    // 4. Render Rows (Latest 5 in current filter)
     let rowsHtml = "";
     displayList.slice(0, 5).forEach(t => {
       const outcomeBadge = t.outcome === "WIN" 
@@ -619,11 +615,24 @@
       const dec = t.decimals !== undefined ? t.decimals : 3;
       const shortAsset = t.asset.replace(/\s*\(OTC\)/gi, " *").slice(0, 9);
 
+      // Strong vs Bias Badge
+      const isStrong = t.tier === "STRONG" || (t.setup && t.setup.includes("STRONG"));
+      const tierBadge = isStrong 
+        ? `<span class="qx-tier-badge qx-tier-strong" title="Strong Signal (Score >= 4)">S</span>` 
+        : `<span class="qx-tier-badge qx-tier-bias" title="Bias Signal (Score 3)">B</span>`;
+
+      const dirColor = t.dir === "CALL" 
+        ? (isStrong ? "#10b981" : "#34d399") 
+        : (isStrong ? "#ef4444" : "#f87171");
+
       rowsHtml += `
-        <tr>
+        <tr title="${t.setup} | Score: ${t.score || '--'}/5">
           <td>${t.time}</td>
           <td title="${t.asset}" style="color: #94a3b8; font-weight: 600;">${shortAsset}</td>
-          <td style="color: ${t.dir === 'CALL' ? '#10b981' : '#ef4444'}; font-weight: 600;">${t.dir}</td>
+          <td style="white-space: nowrap;">
+            ${tierBadge}
+            <strong style="color: ${dirColor}; margin-left: 2px;">${t.dir}</strong>
+          </td>
           <td>${t.entry.toFixed(dec)}</td>
           <td>${t.exit.toFixed(dec)}</td>
           <td style="text-align: right;">${outcomeBadge}</td>
@@ -646,7 +655,7 @@
       <div id="qx-panel-header">
         <div id="qx-panel-title">
           <span class="qx-badge">READ ONLY</span>
-          <strong>QX Assistant</strong> <small>v1.4.18</small>
+          <strong>QX Assistant</strong> <small>v1.4.19</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-sound-strong" class="qx-audio-btn" title="Toggle Strong Alerts (Triple Fanfare x3)">${strongSoundEnabled ? "S:🔊" : "S:🔇"}</button>
@@ -703,7 +712,7 @@
           </div>
         </div>
 
-        <!-- FORWARD-TEST LOG DRAWER WITH IN-COLUMN PAIR FILTER -->
+        <!-- FORWARD-TEST LOG DRAWER WITH IN-COLUMN PAIR FILTER & TIER BADGES -->
         <div class="qx-section" id="qx-log-section">
           <div class="qx-log-header">
             <span class="qx-section-title" style="margin-bottom: 0;">FORWARD-TEST LOG</span>

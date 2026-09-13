@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.4.18",
-  "description": "Read-only assistant with in-column pair filtering for forward-test log, retroactive catch-up, and multi-tier audio.",
+  "version": "1.4.19",
+  "description": "Read-only assistant with Strong [S] and Bias [B] tier badges in the forward-test log.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",
