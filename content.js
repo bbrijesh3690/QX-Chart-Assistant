@@ -1575,7 +1575,7 @@
 
     if (displayList.length === 0) {
       bodyEl.innerHTML = `<tr><td colspan="6" class="qx-empty-log">${tradeLog.length === 0 ? "Awaiting first settled candle..." : "No trades match active filters"}</td></tr>`;
-      summaryEl.textContent = `0W - 0L (0%)`;
+      summaryEl.textContent = `0T: 0W - 0L (0%)`;
       summaryEl.style.background = "#2d3748";
       return;
     }
@@ -1593,7 +1593,7 @@
     const totalDecided = wins + losses;
     const wr = totalDecided > 0 ? ((wins / totalDecided) * 100).toFixed(0) : 0;
 
-    summaryEl.textContent = `${wins}W - ${losses}L (${wr}%)`;
+    const totalCount = wins + losses + ties; summaryEl.textContent = ties > 0 ? `${totalCount}T: ${wins}W - ${losses}L (${ties}T) (${wr}%)` : `${totalCount}T: ${wins}W - ${losses}L (${wr}%)`;
     summaryEl.style.background = wr >= 65 ? "#065f46" : (wr >= 50 ? "#2d3748" : "#7f1d1d");
 
     let rowsHtml = "";
@@ -1643,7 +1643,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.35</small>
+          <strong>QX Assistant</strong> <small>v1.4.36</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-sound-strong" class="qx-audio-btn" title="Toggle Strong Alerts (Triple Fanfare x3)">${strongSoundEnabled ? "S:🔊" : "S:🔇"}</button>
