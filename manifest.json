@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.4.14",
-  "description": "Read-only assistant with boosted loud Web Audio engine, 4 selectable sound profiles, and live preview test.",
+  "version": "1.4.15",
+  "description": "Read-only assistant with 3x Triple Fanfare for Strong signals and 3x Arcade Ping for Bias signals.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",

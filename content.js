@@ -1,10 +1,10 @@
 (function () {
-  const VAULT_KEY = "__QX_ASSET_VAULT_V12__";
+  const VAULT_KEY = "__QX_ASSET_VAULT_V13__";
   const assetVault = new Map();
   const globalHistoryPool = [];
 
   // ==========================================
-  // HIGH-ENERGY LOUD AUDIO SYNTHESIZER
+  // LOUD WEB AUDIO ENGINE (3X REPEAT ALERTS)
   // ==========================================
   let audioCtx = null;
   let masterComp = null;
@@ -15,9 +15,9 @@
       if (AudioCtx) {
         audioCtx = new AudioCtx();
         masterComp = audioCtx.createDynamicsCompressor();
-        masterComp.threshold.setValueAtTime(-14, audioCtx.currentTime);
-        masterComp.knee.setValueAtTime(10, audioCtx.currentTime);
-        masterComp.ratio.setValueAtTime(8, audioCtx.currentTime);
+        masterComp.threshold.setValueAtTime(-12, audioCtx.currentTime);
+        masterComp.knee.setValueAtTime(8, audioCtx.currentTime);
+        masterComp.ratio.setValueAtTime(10, audioCtx.currentTime);
         masterComp.attack.setValueAtTime(0.002, audioCtx.currentTime);
         masterComp.release.setValueAtTime(0.1, audioCtx.currentTime);
         masterComp.connect(audioCtx.destination);
@@ -43,7 +43,7 @@
     osc.type = type;
     osc.frequency.setValueAtTime(freq, startTime);
 
-    gain.gain.setValueAtTime(0.001, startTime);
+    gain.gain.setValueAtTime(0.0001, startTime);
     gain.gain.exponentialRampToValueAtTime(peakGain, startTime + 0.015);
     gain.gain.exponentialRampToValueAtTime(0.0001, startTime + duration);
 
@@ -54,64 +54,52 @@
     osc.stop(startTime + duration);
   }
 
+  // Strong: Triple Fanfare played 3 times
+  function playStrongFanfare3x(dir) {
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    const baseTime = ctx.currentTime;
+    const vol = 0.85;
+
+    for (let rep = 0; rep < 3; rep++) {
+      const t = baseTime + (rep * 0.42);
+      if (dir === "CALL") {
+        playTone(659, "triangle", t, 0.08, vol);
+        playTone(880, "triangle", t + 0.07, 0.08, vol);
+        playTone(1174, "triangle", t + 0.14, 0.22, vol);
+      } else {
+        playTone(987, "triangle", t, 0.08, vol);
+        playTone(784, "triangle", t + 0.07, 0.08, vol);
+        playTone(587, "triangle", t + 0.14, 0.22, vol);
+      }
+    }
+  }
+
+  // Bias: Arcade Ping played 3 times
+  function playBiasArcade3x(dir) {
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    const baseTime = ctx.currentTime;
+    const vol = 0.70;
+
+    for (let rep = 0; rep < 3; rep++) {
+      const t = baseTime + (rep * 0.36);
+      if (dir === "CALL") {
+        playTone(880, "triangle", t, 0.12, vol);
+        playTone(1320, "triangle", t + 0.08, 0.22, vol * 1.05);
+      } else {
+        playTone(980, "triangle", t, 0.12, vol);
+        playTone(587, "triangle", t + 0.08, 0.22, vol * 1.05);
+      }
+    }
+  }
+
   function playAlert(tier, dir) {
     try {
-      const ctx = getAudioContext();
-      if (!ctx) return;
-      const now = ctx.currentTime;
-      const theme = localStorage.getItem("__qx_sound_theme__") || "arcade";
-      const vol = tier === "STRONG" ? 0.85 : 0.55;
-
-      // THEME 1: ARCADE PING (Crisp upward or downward harmonic chime)
-      if (theme === "arcade") {
-        if (dir === "CALL") {
-          playTone(880, "triangle", now, 0.14, vol);
-          playTone(1320, "triangle", now + 0.08, 0.28, vol * 1.05);
-        } else {
-          playTone(980, "triangle", now, 0.14, vol);
-          playTone(587, "triangle", now + 0.08, 0.28, vol * 1.05);
-        }
-      }
-      // THEME 2: RADAR PULSE (Piercing double-tap burst)
-      else if (theme === "radar") {
-        const baseFreq = dir === "CALL" ? 1400 : 850;
-        playTone(baseFreq, "square", now, 0.08, vol * 0.45);
-        playTone(baseFreq * 1.15, "square", now + 0.11, 0.14, vol * 0.50);
-      }
-      // THEME 3: TRIPLE FANFARE (3-note staccato notification)
-      else if (theme === "fanfare") {
-        if (dir === "CALL") {
-          playTone(659, "triangle", now, 0.08, vol);
-          playTone(880, "triangle", now + 0.07, 0.08, vol);
-          playTone(1174, "triangle", now + 0.14, 0.24, vol);
-        } else {
-          playTone(987, "triangle", now, 0.08, vol);
-          playTone(784, "triangle", now + 0.07, 0.08, vol);
-          playTone(587, "triangle", now + 0.14, 0.24, vol);
-        }
-      }
-      // THEME 4: DIGITAL SNAP (Synth laser blip)
-      else if (theme === "snap") {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = "sawtooth";
-
-        if (dir === "CALL") {
-          osc.frequency.setValueAtTime(600, now);
-          osc.frequency.exponentialRampToValueAtTime(1800, now + 0.18);
-        } else {
-          osc.frequency.setValueAtTime(1600, now);
-          osc.frequency.exponentialRampToValueAtTime(500, now + 0.18);
-        }
-
-        gain.gain.setValueAtTime(0.001, now);
-        gain.gain.exponentialRampToValueAtTime(vol * 0.40, now + 0.02);
-        gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.25);
-
-        osc.connect(gain);
-        gain.connect(masterComp || ctx.destination);
-        osc.start(now);
-        osc.stop(now + 0.25);
+      if (tier === "STRONG") {
+        playStrongFanfare3x(dir);
+      } else if (tier === "BIAS") {
+        playBiasArcade3x(dir);
       }
     } catch (_) {}
   }
@@ -470,7 +458,6 @@
 
     const strongSoundEnabled = localStorage.getItem("__qx_sound_strong__") !== "false";
     const biasSoundEnabled = localStorage.getItem("__qx_sound_bias__") !== "false";
-    const savedTheme = localStorage.getItem("__qx_sound_theme__") || "arcade";
 
     const panel = document.createElement("div");
     panel.id = "qx-assistant-panel";
@@ -478,11 +465,11 @@
       <div id="qx-panel-header">
         <div id="qx-panel-title">
           <span class="qx-badge">READ ONLY</span>
-          <strong>QX Assistant</strong> <small>v1.4.14</small>
+          <strong>QX Assistant</strong> <small>v1.4.15</small>
         </div>
         <div id="qx-panel-controls">
-          <button id="qx-btn-sound-strong" class="qx-audio-btn" title="Toggle Strong Signal Alerts">${strongSoundEnabled ? "S:🔊" : "S:🔇"}</button>
-          <button id="qx-btn-sound-bias" class="qx-audio-btn" title="Toggle Bias Signal Alerts">${biasSoundEnabled ? "B:🔊" : "B:🔇"}</button>
+          <button id="qx-btn-sound-strong" class="qx-audio-btn" title="Toggle Strong Alerts (Triple Fanfare x3)">${strongSoundEnabled ? "S:🔊" : "S:🔇"}</button>
+          <button id="qx-btn-sound-bias" class="qx-audio-btn" title="Toggle Bias Alerts (Arcade Ping x3)">${biasSoundEnabled ? "B:🔊" : "B:🔇"}</button>
           <button id="qx-btn-refresh" title="Synchronize Tabs & History">[Sync]</button>
           <button id="qx-btn-reset-pos" title="Reset Position">[R]</button>
           <button id="qx-btn-min" title="Minimize">[-]</button>
@@ -501,20 +488,6 @@
           <div class="qx-row" style="margin-top: 4px; border-top: 1px solid #232838; padding-top: 4px;">
             <span class="qx-label">1m Candle:</span>
             <span id="qx-ui-timer" class="qx-timer-badge">--:--</span>
-          </div>
-        </div>
-
-        <!-- SOUND THEME SELECTOR & PREVIEW ROW -->
-        <div class="qx-section">
-          <div class="qx-section-title">AUDIO ALERT THEME</div>
-          <div class="qx-sound-row">
-            <select id="qx-select-theme" class="qx-sound-select">
-              <option value="arcade" ${savedTheme === "arcade" ? "selected" : ""}>Arcade Ping</option>
-              <option value="radar" ${savedTheme === "radar" ? "selected" : ""}>Radar Pulse</option>
-              <option value="fanfare" ${savedTheme === "fanfare" ? "selected" : ""}>Triple Fanfare</option>
-              <option value="snap" ${savedTheme === "snap" ? "selected" : ""}>Digital Snap</option>
-            </select>
-            <button id="qx-btn-test-sound" class="qx-test-btn" title="Test Current Sound">▶ Test</button>
           </div>
         </div>
 
@@ -567,7 +540,7 @@
     let dragOffset = { x: 0, y: 0 };
 
     header.addEventListener("mousedown", (e) => {
-      if (e.target.tagName === "BUTTON" || e.target.tagName === "SELECT") return;
+      if (e.target.tagName === "BUTTON") return;
       isDragging = true;
       dragOffset.x = e.clientX - panel.offsetLeft;
       dragOffset.y = e.clientY - panel.offsetTop;
@@ -595,18 +568,6 @@
       document.addEventListener("mouseup", onMouseUp);
     });
 
-    // Theme selector & Test button
-    const themeSelect = document.getElementById("qx-select-theme");
-    themeSelect.addEventListener("change", (e) => {
-      localStorage.setItem("__qx_sound_theme__", e.target.value);
-      playAlert("STRONG", "CALL");
-    });
-
-    const btnTestSound = document.getElementById("qx-btn-test-sound");
-    btnTestSound.addEventListener("click", () => {
-      playAlert("STRONG", "CALL");
-    });
-
     // Audio Toggle Handlers
     const btnSoundStrong = document.getElementById("qx-btn-sound-strong");
     btnSoundStrong.addEventListener("click", () => {
@@ -614,7 +575,7 @@
       const next = !cur;
       localStorage.setItem("__qx_sound_strong__", next ? "true" : "false");
       btnSoundStrong.textContent = next ? "S:🔊" : "S:🔇";
-      if (next) playAlert("STRONG", "CALL");
+      if (next) playAlert("STRONG", "CALL"); // Preview Triple Fanfare 3x
     });
 
     const btnSoundBias = document.getElementById("qx-btn-sound-bias");
@@ -623,7 +584,7 @@
       const next = !cur;
       localStorage.setItem("__qx_sound_bias__", next ? "true" : "false");
       btnSoundBias.textContent = next ? "B:🔊" : "B:🔇";
-      if (next) playAlert("BIAS", "CALL");
+      if (next) playAlert("BIAS", "CALL"); // Preview Arcade Ping 3x
     });
 
     const btnRefresh = document.getElementById("qx-btn-refresh");
@@ -668,7 +629,7 @@
   }, 400);
 
   // ==============================================================
-  // ANALYSIS & FLIP GATE & LOUD ALERT ENGINE
+  // ANALYSIS & FLIP GATE & 3X LOUD REPEAT ALERTS
   // ==============================================================
   function updateAnalysis() {
     const dec = state.decimals !== undefined ? state.decimals : 3;
@@ -729,7 +690,7 @@
     const advisoryEl = document.getElementById("qx-ui-advisory");
 
     // ==============================================================
-    // WINDOW A: 55,000ms - 59,999ms (Lock at 55s + Loud Chime + Flip Gate)
+    // WINDOW A: 55,000ms - 59,999ms (Lock at 55s + 3x Chimes + Flip Gate)
     // ==============================================================
     if (msInMinute >= 55000) {
       if (state.evalMinute !== currentMinFloor) {
@@ -738,7 +699,7 @@
         state.evalMinute = currentMinFloor;
         state.activeFlipped = false;
 
-        // Play loud sound alert
+        // Trigger 3x repeat chimes based on tier
         const strongSoundEnabled = localStorage.getItem("__qx_sound_strong__") !== "false";
         const biasSoundEnabled = localStorage.getItem("__qx_sound_bias__") !== "false";
 
