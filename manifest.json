@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.4.16",
-  "description": "Read-only assistant with automated live forward-test trade logging, settlement engine, and win-rate analytics.",
+  "version": "1.4.17",
+  "description": "Read-only assistant with multi-asset retroactive forward-test catch-up, isolated vaults, and win-rate log.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",
