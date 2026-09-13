@@ -1,7 +1,7 @@
 (function () {
-  const VAULT_KEY = "__QX_ASSET_VAULT_V28__";
-  const LOG_KEY = "__QX_SHARED_LOG_V16__";
-  const PENDING_KEY = "__QX_SHARED_PENDING_V14__";
+  const VAULT_KEY = "__QX_ASSET_VAULT_V29__";
+  const LOG_KEY = "__QX_SHARED_LOG_V17__";
+  const PENDING_KEY = "__QX_SHARED_PENDING_V15__";
 
   const assetVault = new Map();
   const globalHistoryPool = [];
@@ -912,7 +912,7 @@
   <sheetData>${s1RowsXml}</sheetData>
 </worksheet>`;
 
-    // 2. Build Sheet 2: "Bank-Statement" Style Backward.test Summary + 1M Candles
+    // 2. Build Sheet 2: Bank-Statement Style + Candle-by-Candle Status
     const assetsToExport = [];
     if (assetVault.size > 0) {
       for (const [name, data] of assetVault.entries()) {
@@ -946,7 +946,6 @@
       </row>`;
       currentRow++;
 
-      // Spacer
       s2RowsXml += `<row r="${currentRow}"></row>`;
       currentRow++;
 
@@ -995,7 +994,6 @@
         </row>`;
         currentRow++;
 
-        // Spacer
         s2RowsXml += `<row r="${currentRow}"></row>`;
         currentRow++;
 
@@ -1022,18 +1020,21 @@
         currentRow++;
       }
 
-      // Spacer before raw candles table
       s2RowsXml += `<row r="${currentRow}"></row>`;
       currentRow++;
 
-      // Section Title: Historical 1M Raw Candles
+      // Section Title
       s2RowsXml += `<row r="${currentRow}">
-        <c r="A${currentRow}" t="inlineStr"><is><t>HISTORICAL 1-MINUTE RAW CANDLES &amp; INDICATORS</t></is></c>
+        <c r="A${currentRow}" t="inlineStr"><is><t>HISTORICAL 1-MINUTE RAW CANDLES &amp; ROW-BY-ROW SIGNAL STATUS</t></is></c>
       </row>`;
       currentRow++;
 
-      // Candle Table Column Headers
-      const s2Headers = ["Timestamp", "Time", "Asset", "Open", "High", "Low", "Close", "RSI (14)", "Support (20-bar)", "Resistance (20-bar)"];
+      // Candle Table Column Headers with Signal Triggered and Trade Outcome
+      const s2Headers = [
+        "Timestamp", "Time", "Asset", "Open", "High", "Low", "Close", 
+        "RSI (14)", "Support (20-bar)", "Resistance (20-bar)", 
+        "Signal Triggered", "Trade Outcome"
+      ];
       s2RowsXml += `<row r="${currentRow}">`;
       s2Headers.forEach((h, idx) => {
         s2RowsXml += `<c r="${colLetters(idx + 1)}${currentRow}" t="inlineStr"><is><t>${escapeXml(h)}</t></is></c>`;
@@ -1041,7 +1042,7 @@
       s2RowsXml += `</row>`;
       currentRow++;
 
-      // Candle Data Rows
+      // Candle Data Rows with Row-by-Row Verdict & Next-Candle Outcome
       for (let i = 0; i < cList.length; i++) {
         const c = cList[i];
         const sub = cList.slice(0, i + 1);
@@ -1049,6 +1050,64 @@
         const srVal = i >= 5 ? calcSR(sub) : { s: null, r: null };
         const d = new Date(c.time);
         const timeStr = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+
+        let sigText = "Warmup";
+        let outcomeText = "-";
+
+        if (i >= 20 && i < cList.length - 1) {
+          const m5 = getAggregate(sub, null, 5);
+          const m15 = getAggregate(sub, null, 15);
+          let trend15m = "Neutral";
+          if (m15.length >= 1) {
+            const last15 = m15[m15.length - 1];
+            trend15m = last15.close >= last15.open ? "Bullish" : "Bearish";
+          }
+          let trend5m = "Neutral";
+          if (m5.length >= 2) {
+            const cur5 = m5[m5.length - 1];
+            const prev5 = m5[m5.length - 2];
+            trend5m = cur5.close >= prev5.close ? "Bullish" : "Bearish";
+          }
+
+          const verdict = evaluateBacktestConfluence(trend15m, trend5m, rsiVal, c, srVal);
+          if (verdict.dir === "NONE") {
+            sigText = `Neutral (${verdict.score}/5)`;
+            outcomeText = "Skipped";
+          } else {
+            const tierTag = verdict.tier === "STRONG" ? "[S]" : "[B]";
+            sigText = `${tierTag} ${verdict.dir} (${verdict.score}/5)`;
+
+            const nextCandle = cList[i + 1];
+            const entry = nextCandle.open;
+            const exit = nextCandle.close;
+            if (verdict.dir === "CALL") {
+              outcomeText = exit > entry ? "WIN" : (exit < entry ? "LOSS" : "TIE");
+            } else if (verdict.dir === "PUT") {
+              outcomeText = exit < entry ? "WIN" : (exit > entry ? "LOSS" : "TIE");
+            }
+          }
+        } else if (i === cList.length - 1) {
+          if (i >= 20) {
+            const m5 = getAggregate(sub, null, 5);
+            const m15 = getAggregate(sub, null, 15);
+            let trend15m = "Neutral";
+            if (m15.length >= 1) {
+              const last15 = m15[m15.length - 1];
+              trend15m = last15.close >= last15.open ? "Bullish" : "Bearish";
+            }
+            let trend5m = "Neutral";
+            if (m5.length >= 2) {
+              const cur5 = m5[m5.length - 1];
+              const prev5 = m5[m5.length - 2];
+              trend5m = cur5.close >= prev5.close ? "Bullish" : "Bearish";
+            }
+            const verdict = evaluateBacktestConfluence(trend15m, trend5m, rsiVal, c, srVal);
+            sigText = verdict.dir === "NONE" ? `Neutral (${verdict.score}/5)` : `[${verdict.tier === 'STRONG' ? 'S' : 'B'}] ${verdict.dir} (${verdict.score}/5)`;
+          } else {
+            sigText = "Warmup";
+          }
+          outcomeText = "Pending (Last Bar)";
+        }
 
         s2RowsXml += `<row r="${currentRow}">
           <c r="A${currentRow}"><v>${c.time}</v></c>
@@ -1061,11 +1120,12 @@
           ${rsiVal !== null ? `<c r="H${currentRow}"><v>${Number(rsiVal.toFixed(1))}</v></c>` : `<c r="H${currentRow}" t="inlineStr"><is><t>--</t></is></c>`}
           ${srVal.s !== null ? `<c r="I${currentRow}"><v>${Number(srVal.s.toFixed(item.dec))}</v></c>` : `<c r="I${currentRow}" t="inlineStr"><is><t>--</t></is></c>`}
           ${srVal.r !== null ? `<c r="J${currentRow}"><v>${Number(srVal.r.toFixed(item.dec))}</v></c>` : `<c r="J${currentRow}" t="inlineStr"><is><t>--</t></is></c>`}
+          <c r="K${currentRow}" t="inlineStr"><is><t>${escapeXml(sigText)}</t></is></c>
+          <c r="L${currentRow}" t="inlineStr"><is><t>${escapeXml(outcomeText)}</t></is></c>
         </row>`;
         currentRow++;
       }
 
-      // Spacer between assets if multiple
       s2RowsXml += `<row r="${currentRow}"></row>`;
       currentRow++;
     });
@@ -1365,7 +1425,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.31</small>
+          <strong>QX Assistant</strong> <small>v1.4.32</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-sound-strong" class="qx-audio-btn" title="Toggle Strong Alerts (Triple Fanfare x3)">${strongSoundEnabled ? "S:🔊" : "S:🔇"}</button>
@@ -1430,7 +1490,7 @@
             </div>
             <div id="qx-forward-controls" class="qx-tab-actions">
               <span id="qx-log-summary" class="qx-log-pill">0W - 0L (0%)</span>
-              <button id="qx-btn-export-log" class="qx-export-btn" title="Export Bank-Statement Style .xlsx Workbook">Export</button>
+              <button id="qx-btn-export-log" class="qx-export-btn" title="Export Native .xlsx Workbook with Forward Trades & Historical Candles">Export</button>
               <button id="qx-btn-clear-log" class="qx-clear-btn" title="Reset Shared Session Log Across Windows">Clr</button>
             </div>
             <div id="qx-backtest-controls" class="qx-tab-actions qx-hidden">
