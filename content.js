@@ -1,5 +1,5 @@
 (function () {
-  const VAULT_KEY = "__QX_ASSET_VAULT_V8__";
+  const VAULT_KEY = "__QX_ASSET_VAULT_V9__";
   const assetVault = new Map();
   const globalHistoryPool = [];
 
@@ -361,7 +361,7 @@
       <div id="qx-panel-header">
         <div id="qx-panel-title">
           <span class="qx-badge">READ ONLY</span>
-          <strong>QX Assistant</strong> <small>v1.4.10</small>
+          <strong>QX Assistant</strong> <small>v1.4.11</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-refresh" title="Synchronize Tabs & History">[Sync]</button>
@@ -503,9 +503,9 @@
     else mountUI();
   }, 400);
 
-  // ==========================================
-  // CLEAN ANALYSIS & FLIP-ONLY WATCHDOG
-  // ==========================================
+  // ==============================================================
+  // ANALYSIS & MILLISECOND-PRECISION FLIP GATE (58s - 60s)
+  // ==============================================================
   function updateAnalysis() {
     const dec = state.decimals !== undefined ? state.decimals : 3;
 
@@ -543,14 +543,16 @@
 
     const liveVerdict = evaluateConfluence(trend15m, trend5m, rsi, state.livePrice, sr);
 
+    // Millisecond-accurate time tracking
     const now = Date.now();
-    const sec = Math.floor((now % 60000) / 1000);
+    const msInMinute = now % 60000;
+    const sec = Math.floor(msInMinute / 1000);
     const remSec = 60 - sec;
     const currentMinFloor = Math.floor(now / 60000) * 60000;
 
     const timerEl = document.getElementById("qx-ui-timer");
     if (timerEl) {
-      if (sec < 55) {
+      if (msInMinute < 55000) {
         timerEl.textContent = `00:${String(remSec).padStart(2, '0')}s`;
         timerEl.className = "qx-timer-badge qx-timer-analyzing";
       } else {
@@ -564,9 +566,10 @@
     const advisoryEl = document.getElementById("qx-ui-advisory");
 
     // ==============================================================
-    // 55s - 59s: LOCK SIGNAL FOR NEXT CANDLE + BACKGROUND WATCHDOG
+    // WINDOW A: 55,000ms - 59,999ms (Lock at 55s + 58s-60s Flip Gate)
     // ==============================================================
-    if (sec >= 55) {
+    if (msInMinute >= 55000) {
+      // 1. Initial lock at 55.0 seconds
       if (state.evalMinute !== currentMinFloor) {
         state.activeSignal = Object.assign({}, liveVerdict);
         state.activeScore = liveVerdict.score;
@@ -574,8 +577,8 @@
         state.activeFlipped = false;
       }
 
-      // Check for late spike flip
-      if (state.activeSignal && state.activeSignal.dir !== "NONE") {
+      // 2. STRICT 58.0s - 59.999s WATCHDOG GATE (Noise filtered between 55.0s and 57.999s)
+      if (msInMinute >= 58000 && state.activeSignal && state.activeSignal.dir !== "NONE") {
         const flippedNow = (state.activeSignal.dir === "CALL" && liveVerdict.dir !== "CALL") ||
                            (state.activeSignal.dir === "PUT" && liveVerdict.dir !== "PUT") ||
                            (liveVerdict.score < 2);
@@ -584,7 +587,7 @@
         }
       }
 
-      // Clean Single-Line Locked Display
+      // 3. Clean Locked Display
       if (signalEl && state.activeSignal) {
         signalEl.textContent = `${state.activeSignal.setup} [LOCKED]`;
         signalEl.style.color = state.activeSignal.color;
@@ -599,7 +602,7 @@
     }
 
     // ==============================================================
-    // 00s - 54s: ACTIVE CANDLE RUNNING (CLEAN SINGLE LINE)
+    // WINDOW B: 00,000ms - 54,999ms (Active Candle Running)
     // ==============================================================
     else {
       if (signalEl) {
@@ -628,12 +631,14 @@
     }
 
     // ==============================================================
-    // ADVISORY: ONLY RENDERS ON FLIP (HIDDEN OTHERWISE)
+    // ADVISORY BANNER: RENDERS ON FLIP (PERSISTS THROUGH 54s)
     // ==============================================================
     if (advisoryEl) {
       if (state.activeFlipped) {
         advisoryEl.className = "qx-advisory-box qx-advisory-flip";
-        advisoryEl.textContent = "⚠️ FLIP DETECTED: Signal shifted in final 5s — DO NOT TRADE!";
+        advisoryEl.textContent = msInMinute >= 55000 
+          ? "⚠ FLIP DETECTED: Signal shifted in final 2s — DO NOT TRADE!"
+          : "⚠ FLIP DETECTED: Trade skipped (failed at close) — Awaiting next signal";
       } else {
         advisoryEl.className = "qx-advisory-box qx-hidden";
         advisoryEl.textContent = "";
