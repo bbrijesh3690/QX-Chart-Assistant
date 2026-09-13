@@ -1,7 +1,7 @@
 (function () {
-  const VAULT_KEY = "__QX_ASSET_VAULT_V18__";
-  const LOG_KEY = "__QX_SHARED_LOG_V6__";
-  const PENDING_KEY = "__QX_SHARED_PENDING_V4__";
+  const VAULT_KEY = "__QX_ASSET_VAULT_V19__";
+  const LOG_KEY = "__QX_SHARED_LOG_V7__";
+  const PENDING_KEY = "__QX_SHARED_PENDING_V5__";
 
   const assetVault = new Map();
   const globalHistoryPool = [];
@@ -55,7 +55,6 @@
     }
   });
 
-  // Background fallback sync every 1 second
   setInterval(() => {
     loadLog();
     renderLogUI();
@@ -473,7 +472,6 @@
 
       reconcilePendingTrades(activeAsset, state.candles1m, minFloor);
 
-      // Register new trade ticket for opening candle
       if (state.activeSignal && state.activeSignal.dir !== "NONE" && !state.activeFlipped && state.evalMinute === finishedCandle.time) {
         const tradeId = `${activeAsset}_${minFloor}`;
         loadLog();
@@ -616,7 +614,162 @@
   }
 
   // ==========================================
-  // RENDER LOG UI
+  // INSTANT HISTORICAL BACKTEST ENGINE
+  // ==========================================
+  function runHistoricalBacktest() {
+    const candles = state.candles1m;
+    const modalEl = document.getElementById("qx-backtest-modal");
+    if (!modalEl) return;
+
+    if (!candles || candles.length < 25) {
+      modalEl.innerHTML = `
+        <div class="qx-bt-card">
+          <div class="qx-bt-title">HISTORICAL BACKTEST</div>
+          <div style="color: #fca5a5; margin: 15px 0; font-size: 11px;">
+            ⚠️ Insufficient History: Need at least 25 1-minute candles in memory (currently has ${candles ? candles.length : 0}).
+            <br><br>
+            Please click <strong>[Sync]</strong> or wait 1-2 minutes for the chart history to load.
+          </div>
+          <button id="qx-btn-close-bt" class="qx-bt-close-btn">Close</button>
+        </div>
+      `;
+      modalEl.classList.remove("qx-hidden");
+      document.getElementById("qx-btn-close-bt").addEventListener("click", () => modalEl.classList.add("qx-hidden"));
+      return;
+    }
+
+    let strongWins = 0, strongLosses = 0, strongTies = 0, strongCount = 0;
+    let biasWins = 0, biasLosses = 0, biasTies = 0, biasCount = 0;
+    let currentStreak = 0, maxStreak = 0;
+
+    // Simulation loop from candle 20 to candles.length - 2 (settling against candle i+1)
+    for (let i = 20; i < candles.length - 1; i++) {
+      const subCandles = candles.slice(0, i + 1);
+      const m5 = getAggregate(subCandles, null, 5);
+      const m15 = getAggregate(subCandles, null, 15);
+      const rsi = calcRSI(subCandles, 14);
+      const sr = calcSR(subCandles);
+
+      let trend15m = "Neutral";
+      if (m15.length >= 1) {
+        const last15 = m15[m15.length - 1];
+        trend15m = last15.close >= last15.open ? "Bullish" : "Bearish";
+      }
+
+      let trend5m = "Neutral";
+      if (m5.length >= 2) {
+        const cur5 = m5[m5.length - 1];
+        const prev5 = m5[m5.length - 2];
+        trend5m = cur5.close >= prev5.close ? "Bullish" : "Bearish";
+      }
+
+      const price = subCandles[subCandles.length - 1].close;
+      const verdict = evaluateConfluence(trend15m, trend5m, rsi, price, sr);
+
+      if (verdict.dir !== "NONE") {
+        const targetCandle = candles[i + 1];
+        const entry = targetCandle.open;
+        const exit = targetCandle.close;
+
+        let outcome = "TIE";
+        if (verdict.dir === "CALL") {
+          outcome = exit > entry ? "WIN" : (exit < entry ? "LOSS" : "TIE");
+        } else if (verdict.dir === "PUT") {
+          outcome = exit < entry ? "WIN" : (exit > entry ? "LOSS" : "TIE");
+        }
+
+        if (verdict.tier === "STRONG") {
+          strongCount++;
+          if (outcome === "WIN") strongWins++;
+          else if (outcome === "LOSS") strongLosses++;
+          else strongTies++;
+        } else if (verdict.tier === "BIAS") {
+          biasCount++;
+          if (outcome === "WIN") biasWins++;
+          else if (outcome === "LOSS") biasLosses++;
+          else biasTies++;
+        }
+
+        if (outcome === "WIN") {
+          currentStreak++;
+          if (currentStreak > maxStreak) maxStreak = currentStreak;
+        } else if (outcome === "LOSS") {
+          currentStreak = 0;
+        }
+      }
+    }
+
+    const totalCount = strongCount + biasCount;
+    const totalWins = strongWins + biasWins;
+    const totalLosses = strongLosses + biasLosses;
+    const totalTies = strongTies + biasTies;
+
+    const strongDecided = strongWins + strongLosses;
+    const strongWr = strongDecided > 0 ? ((strongWins / strongDecided) * 100).toFixed(1) : "0.0";
+
+    const biasDecided = biasWins + biasLosses;
+    const biasWr = biasDecided > 0 ? ((biasWins / biasDecided) * 100).toFixed(1) : "0.0";
+
+    const totalDecided = totalWins + totalLosses;
+    const totalWr = totalDecided > 0 ? ((totalWins / totalDecided) * 100).toFixed(1) : "0.0";
+
+    const spanHours = (candles.length / 60).toFixed(1);
+
+    modalEl.innerHTML = `
+      <div class="qx-bt-card">
+        <div class="qx-bt-header">
+          <div>
+            <div class="qx-bt-title">HISTORICAL BACKTEST</div>
+            <div class="qx-bt-sub">${activeAsset} • ${candles.length} Candles (~${spanHours}h)</div>
+          </div>
+          <button id="qx-btn-close-bt" class="qx-bt-close-x" title="Close">✕</button>
+        </div>
+
+        <div class="qx-bt-body">
+          <table class="qx-bt-table">
+            <thead>
+              <tr>
+                <th>Tier</th>
+                <th>Setups</th>
+                <th>W - L (Tie)</th>
+                <th style="text-align: right;">Win Rate</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><span class="qx-tier-badge qx-tier-strong">S</span> <strong>Strong</strong></td>
+                <td>${strongCount}</td>
+                <td>${strongWins}W - ${strongLosses}L ${strongTies > 0 ? `(${strongTies}T)` : ''}</td>
+                <td style="text-align: right; font-weight: 700; color: ${parseFloat(strongWr) >= 65 ? '#34d399' : '#f87171'};">${strongWr}%</td>
+              </tr>
+              <tr>
+                <td><span class="qx-tier-badge qx-tier-bias">B</span> <strong>Bias</strong></td>
+                <td>${biasCount}</td>
+                <td>${biasWins}W - ${biasLosses}L ${biasTies > 0 ? `(${biasTies}T)` : ''}</td>
+                <td style="text-align: right; font-weight: 700; color: ${parseFloat(biasWr) >= 60 ? '#34d399' : '#f87171'};">${biasWr}%</td>
+              </tr>
+              <tr class="qx-bt-total-row">
+                <td><strong>Combined</strong></td>
+                <td><strong>${totalCount}</strong></td>
+                <td><strong>${totalWins}W - ${totalLosses}L</strong></td>
+                <td style="text-align: right; font-weight: 700; color: ${parseFloat(totalWr) >= 60 ? '#38bdf8' : '#e2e8f0'};">${totalWr}%</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="qx-bt-footer">
+            <div>🔥 Max Win Streak: <strong>${maxStreak} Consecutive Wins</strong></div>
+            <div style="color: #64748b; font-size: 8.5px; margin-top: 3px;">* Evaluated on completed 1m bars without 58s watchdog variance.</div>
+          </div>
+        </div>
+      </div>
+    `;
+    modalEl.classList.remove("qx-hidden");
+    document.getElementById("qx-btn-close-bt").addEventListener("click", () => modalEl.classList.add("qx-hidden"));
+  }
+
+  // ==========================================
+  // RENDER LOG UI WITH S/B TIER BADGES
   // ==========================================
   function renderLogUI() {
     const bodyEl = document.getElementById("qx-log-body");
@@ -712,11 +865,12 @@
       <div id="qx-panel-header">
         <div id="qx-panel-title">
           <span class="qx-badge">READ ONLY</span>
-          <strong>QX Assistant</strong> <small>v1.4.20</small>
+          <strong>QX Assistant</strong> <small>v1.4.21</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-sound-strong" class="qx-audio-btn" title="Toggle Strong Alerts (Triple Fanfare x3)">${strongSoundEnabled ? "S:🔊" : "S:🔇"}</button>
           <button id="qx-btn-sound-bias" class="qx-audio-btn" title="Toggle Bias Alerts (Arcade Ping x3)">${biasSoundEnabled ? "B:🔊" : "B:🔇"}</button>
+          <button id="qx-btn-backtest" class="qx-bt-btn" title="Run Instant Historical Backtest on Stored Vault History">[Test]</button>
           <button id="qx-btn-refresh" title="Synchronize Tabs & History">[Sync]</button>
           <button id="qx-btn-reset-pos" title="Reset Position">[R]</button>
           <button id="qx-btn-min" title="Minimize">[-]</button>
@@ -769,7 +923,7 @@
           </div>
         </div>
 
-        <!-- SHARED CROSS-WINDOW FORWARD-TEST LOG DRAWER -->
+        <!-- FORWARD-TEST LOG DRAWER -->
         <div class="qx-section" id="qx-log-section">
           <div class="qx-log-header">
             <span class="qx-section-title" style="margin-bottom: 0;">FORWARD-TEST LOG</span>
@@ -802,6 +956,9 @@
         </div>
 
       </div>
+
+      <!-- INSTANT BACKTEST MODAL OVERLAY -->
+      <div id="qx-backtest-modal" class="qx-backtest-modal qx-hidden"></div>
     `;
     document.body.appendChild(panel);
 
@@ -846,6 +1003,11 @@
 
       document.addEventListener("mousemove", onMouseMove);
       document.addEventListener("mouseup", onMouseUp);
+    });
+
+    const btnBacktest = document.getElementById("qx-btn-backtest");
+    btnBacktest.addEventListener("click", () => {
+      runHistoricalBacktest();
     });
 
     const filterEl = document.getElementById("qx-log-pair-filter");
@@ -984,9 +1146,7 @@
     const scoreEl = document.getElementById("qx-ui-score");
     const advisoryEl = document.getElementById("qx-ui-advisory");
 
-    // ==============================================================
-    // WINDOW A: 55,000ms - 59,999ms (Lock at 55s + Chimes + Flip Gate)
-    // ==============================================================
+    // Window A: 55s - 59s Lock + 58s Strict Flip Gate
     if (msInMinute >= 55000) {
       if (state.evalMinute !== currentMinFloor) {
         state.activeSignal = Object.assign({}, liveVerdict);
@@ -1004,7 +1164,6 @@
         }
       }
 
-      // 58.0s - 59.999s Strict Gate
       if (msInMinute >= 58000 && state.activeSignal && state.activeSignal.dir !== "NONE") {
         const flippedNow = (state.activeSignal.dir === "CALL" && liveVerdict.dir !== "CALL") ||
                            (state.activeSignal.dir === "PUT" && liveVerdict.dir !== "PUT") ||
@@ -1014,7 +1173,6 @@
         }
       }
 
-      // Display Lock
       if (signalEl && state.activeSignal) {
         signalEl.textContent = `${state.activeSignal.setup} [LOCKED]`;
         signalEl.style.color = state.activeSignal.color;
@@ -1027,10 +1185,7 @@
         scoreEl.style.color = "#ffffff";
       }
     }
-
-    // ==============================================================
-    // WINDOW B: 00,000ms - 54,999ms (Active Candle Running)
-    // ==============================================================
+    // Window B: 00s - 54s Active Candle Running
     else {
       if (signalEl) {
         if (state.activeSignal && state.activeSignal.dir !== "NONE") {
@@ -1057,7 +1212,6 @@
       }
     }
 
-    // Dynamic Flip Banner
     if (advisoryEl) {
       if (state.activeFlipped) {
         advisoryEl.className = "qx-advisory-box qx-advisory-flip";
@@ -1070,7 +1224,6 @@
       }
     }
 
-    // Sub-indicators
     const m15El = document.getElementById("qx-ui-15m");
     if (m15El) {
       m15El.textContent = trend15m;

@@ -88,6 +88,22 @@
   background: #1e293b !important;
   color: #ffffff !important;
 }
+
+/* BACKTEST BUTTON */
+.qx-bt-btn {
+  font-size: 10px !important;
+  font-weight: 700;
+  padding: 1px 4px !important;
+  background: #064e3b !important;
+  border: 1px solid #10b981 !important;
+  border-radius: 4px;
+  color: #6ee7b7 !important;
+}
+.qx-bt-btn:hover {
+  background: #047857 !important;
+  color: #ffffff !important;
+}
+
 #qx-panel-body {
   padding: 10px;
 }
@@ -353,4 +369,96 @@
   border-radius: 3px;
   font-weight: 700;
   font-size: 8.5px;
+}
+
+/* BACKTEST OVERLAY MODAL */
+.qx-backtest-modal {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(15, 18, 26, 0.97);
+  border-radius: 8px;
+  padding: 12px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  box-sizing: border-box;
+}
+.qx-bt-card {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  justify-content: space-between;
+}
+.qx-bt-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  border-bottom: 1px solid #2d3748;
+  padding-bottom: 6px;
+}
+.qx-bt-title {
+  font-weight: 700;
+  font-size: 11px;
+  color: #38bdf8;
+  letter-spacing: 0.5px;
+}
+.qx-bt-sub {
+  font-size: 9.5px;
+  color: #94a3b8;
+  margin-top: 2px;
+}
+.qx-bt-close-x {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.qx-bt-close-x:hover {
+  color: #ffffff;
+}
+.qx-bt-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 10.5px;
+  margin-top: 10px;
+}
+.qx-bt-table th {
+  color: #64748b;
+  font-size: 9px;
+  text-align: left;
+  border-bottom: 1px solid #232838;
+  padding: 4px 2px;
+}
+.qx-bt-table td {
+  padding: 6px 2px;
+  border-bottom: 1px solid #1e2433;
+}
+.qx-bt-total-row td {
+  border-top: 1px solid #2d3748;
+  border-bottom: none;
+}
+.qx-bt-footer {
+  margin-top: 10px;
+  background: #131722;
+  border: 1px solid #232838;
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 10px;
+}
+.qx-bt-close-btn {
+  background: #0284c7;
+  color: #ffffff;
+  border: none;
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  align-self: flex-end;
 }
