@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "QX Chart Assistant",
   "version": "1.4.28",
-  "description": "Read-only assistant with wick-aware S/R backtest engine, explicit neutral skip counting, Forward.test/Backward.test tabs, and macOS minimize dot.",
+  "description": "FROZEN BASELINE: Multi-timeframe confluence engine, wick-aware Backward.test simulation, 3x audio alerts, and cross-window sync.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",
