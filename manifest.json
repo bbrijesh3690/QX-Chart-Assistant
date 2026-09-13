@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.4.21",
-  "description": "Read-only assistant with instant historical backtest engine modal, multi-window BroadcastChannel sync, and tier indicators.",
+  "version": "1.4.22",
+  "description": "Read-only assistant with dual-tab Forward-Test & Backtest drawer, cross-window sync, and clean header layout.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",
