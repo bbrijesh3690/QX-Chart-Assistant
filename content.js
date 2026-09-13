@@ -1,7 +1,7 @@
 (function () {
-  const VAULT_KEY = "__QX_ASSET_VAULT_V30__";
-  const LOG_KEY = "__QX_SHARED_LOG_V18__";
-  const PENDING_KEY = "__QX_SHARED_PENDING_V16__";
+  const VAULT_KEY = "__QX_ASSET_VAULT_V31__";
+  const LOG_KEY = "__QX_SHARED_LOG_V19__";
+  const PENDING_KEY = "__QX_SHARED_PENDING_V17__";
 
   const assetVault = new Map();
   const globalHistoryPool = [];
@@ -659,6 +659,67 @@
     }
   }
 
+  // ON-DEMAND FORWARD SUMMARY COMPUTATION
+  function computeForwardSummary(trades) {
+    if (!trades || trades.length === 0) return null;
+    let strongWins = 0, strongLosses = 0, strongTies = 0, strongCount = 0;
+    let biasWins = 0, biasLosses = 0, biasTies = 0, biasCount = 0;
+
+    const chron = trades.slice().reverse();
+    let currentWinStreak = 0, maxWinStreak = 0;
+    let currentLossStreak = 0, maxLossStreak = 0;
+
+    chron.forEach(t => {
+      const isStrong = t.tier === "STRONG" || (t.setup && t.setup.includes("STRONG"));
+      if (isStrong) {
+        strongCount++;
+        if (t.outcome === "WIN") strongWins++;
+        else if (t.outcome === "LOSS") strongLosses++;
+        else strongTies++;
+      } else {
+        biasCount++;
+        if (t.outcome === "WIN") biasWins++;
+        else if (t.outcome === "LOSS") biasLosses++;
+        else biasTies++;
+      }
+
+      if (t.outcome === "WIN") {
+        currentWinStreak++;
+        if (currentWinStreak > maxWinStreak) maxWinStreak = currentWinStreak;
+        currentLossStreak = 0;
+      } else if (t.outcome === "LOSS") {
+        currentLossStreak++;
+        if (currentLossStreak > maxLossStreak) maxLossStreak = currentLossStreak;
+        currentWinStreak = 0;
+      }
+    });
+
+    const totalCount = strongCount + biasCount;
+    const totalWins = strongWins + biasWins;
+    const totalLosses = strongLosses + biasLosses;
+    const totalTies = strongTies + biasTies;
+
+    const strongDecided = strongWins + strongLosses;
+    const strongWr = strongDecided > 0 ? (strongWins / strongDecided) : 0;
+
+    const biasDecided = biasWins + biasLosses;
+    const biasWr = biasDecided > 0 ? (biasWins / biasDecided) : 0;
+
+    const totalDecided = totalWins + totalLosses;
+    const totalWr = totalDecided > 0 ? (totalWins / totalDecided) : 0;
+
+    const distinctPairs = Array.from(new Set(trades.map(t => t.asset))).filter(Boolean);
+
+    return {
+      strongCount, strongWins, strongLosses, strongTies, strongWr,
+      biasCount, biasWins, biasLosses, biasTies, biasWr,
+      totalCount, totalWins, totalLosses, totalTies, totalWr,
+      maxWinStreak, maxLossStreak,
+      pairCount: distinctPairs.length
+    };
+  }
+
+  // ON-DEMAND BACKTEST COMPUTATION HELPER
   function computeBacktestData(candles) {
     if (!candles || candles.length < 25) return null;
 
@@ -877,34 +938,146 @@
   function exportTwoSheetWorkbookXlsx() {
     loadLog();
 
-    // 1. Build Sheet 1 (Forward Trades) XML with Auto-Column Widths & Styles
+    const nowStr = new Date().toLocaleTimeString();
+
+    // ==============================================================
+    // SHEET 1: FORWARD.TEST SUMMARY DASHBOARD + TRANSACTIONS
+    // ==============================================================
+    const fwd = computeForwardSummary(tradeLog);
+    let s1RowsXml = "";
+    let s1Row = 1;
+
+    // Title Banner
+    s1RowsXml += `<row r="${s1Row}" ht="28" customHeight="1">
+      <c r="A${s1Row}" s="1" t="inlineStr"><is><t>FORWARD.TEST SESSION PERFORMANCE REPORT (LIVE 3-HOUR RUN)</t></is></c>
+    </row>`;
+    s1Row++;
+
+    // Metadata Card
+    s1RowsXml += `<row r="${s1Row}" ht="20" customHeight="1">
+      <c r="A${s1Row}" s="8" t="inlineStr"><is><t>Total Trades: ${tradeLog.length}</t></is></c>
+      <c r="B${s1Row}" s="8" t="inlineStr"><is><t>Active Pairs: ${fwd ? fwd.pairCount : 0}</t></is></c>
+      <c r="C${s1Row}" s="8" t="inlineStr"><is><t>Report Generated: ${nowStr}</t></is></c>
+      <c r="D${s1Row}" s="8"></c>
+      <c r="E${s1Row}" s="8"></c>
+      <c r="F${s1Row}" s="8"></c>
+    </row>`;
+    s1Row++;
+
+    // Spacer
+    s1RowsXml += `<row r="${s1Row}" ht="12" customHeight="1"></row>`;
+    s1Row++;
+
+    // Summary Table Header (Navy Slate)
+    s1RowsXml += `<row r="${s1Row}" ht="24" customHeight="1">
+      <c r="A${s1Row}" s="2" t="inlineStr"><is><t>Tier</t></is></c>
+      <c r="B${s1Row}" s="2" t="inlineStr"><is><t>Trades Taken</t></is></c>
+      <c r="C${s1Row}" s="2" t="inlineStr"><is><t>Wins</t></is></c>
+      <c r="D${s1Row}" s="2" t="inlineStr"><is><t>Losses</t></is></c>
+      <c r="E${s1Row}" s="2" t="inlineStr"><is><t>Ties</t></is></c>
+      <c r="F${s1Row}" s="2" t="inlineStr"><is><t>Win Rate</t></is></c>
+    </row>`;
+    s1Row++;
+
+    if (fwd) {
+      // Strong Row
+      s1RowsXml += `<row r="${s1Row}" ht="20" customHeight="1">
+        <c r="A${s1Row}" s="6" t="inlineStr"><is><t>Strong [S]</t></is></c>
+        <c r="B${s1Row}" s="5"><v>${fwd.strongCount}</v></c>
+        <c r="C${s1Row}" s="3"><v>${fwd.strongWins}</v></c>
+        <c r="D${s1Row}" s="3"><v>${fwd.strongLosses}</v></c>
+        <c r="E${s1Row}" s="3"><v>${fwd.strongTies}</v></c>
+        <c r="F${s1Row}" s="7"><v>${Number(fwd.strongWr.toFixed(4))}</v></c>
+      </row>`;
+      s1Row++;
+
+      // Bias Row
+      s1RowsXml += `<row r="${s1Row}" ht="20" customHeight="1">
+        <c r="A${s1Row}" s="6" t="inlineStr"><is><t>Bias [B]</t></is></c>
+        <c r="B${s1Row}" s="5"><v>${fwd.biasCount}</v></c>
+        <c r="C${s1Row}" s="3"><v>${fwd.biasWins}</v></c>
+        <c r="D${s1Row}" s="3"><v>${fwd.biasLosses}</v></c>
+        <c r="E${s1Row}" s="3"><v>${fwd.biasTies}</v></c>
+        <c r="F${s1Row}" s="7"><v>${Number(fwd.biasWr.toFixed(4))}</v></c>
+      </row>`;
+      s1Row++;
+
+      // Combined Total Row
+      s1RowsXml += `<row r="${s1Row}" ht="22" customHeight="1">
+        <c r="A${s1Row}" s="6" t="inlineStr"><is><t>Combined Total</t></is></c>
+        <c r="B${s1Row}" s="5"><v>${fwd.totalCount}</v></c>
+        <c r="C${s1Row}" s="5"><v>${fwd.totalWins}</v></c>
+        <c r="D${s1Row}" s="5"><v>${fwd.totalLosses}</v></c>
+        <c r="E${s1Row}" s="5"><v>${fwd.totalTies}</v></c>
+        <c r="F${s1Row}" s="7"><v>${Number(fwd.totalWr.toFixed(4))}</v></c>
+      </row>`;
+      s1Row++;
+
+      // Spacer
+      s1RowsXml += `<row r="${s1Row}" ht="12" customHeight="1"></row>`;
+      s1Row++;
+
+      // Streak KPI Card
+      s1RowsXml += `<row r="${s1Row}" ht="20" customHeight="1">
+        <c r="A${s1Row}" s="8" t="inlineStr"><is><t>Streak Analysis</t></is></c>
+        <c r="B${s1Row}" s="4" t="inlineStr"><is><t>Max Win Streak</t></is></c>
+        <c r="C${s1Row}" s="9" t="inlineStr"><is><t>${fwd.maxWinStreak} Wins</t></is></c>
+        <c r="D${s1Row}" s="4" t="inlineStr"><is><t>Max Loss Streak</t></is></c>
+        <c r="E${s1Row}" s="10" t="inlineStr"><is><t>${fwd.maxLossStreak} Losses</t></is></c>
+        <c r="F${s1Row}" s="3"></c>
+      </row>`;
+      s1Row++;
+    } else {
+      s1RowsXml += `<row r="${s1Row}" ht="20" customHeight="1">
+        <c r="A${s1Row}" s="4" t="inlineStr"><is><t>No forward trades recorded in this session yet.</t></is></c>
+      </row>`;
+      s1Row++;
+    }
+
+    // Spacer
+    s1RowsXml += `<row r="${s1Row}" ht="14" customHeight="1"></row>`;
+    s1Row++;
+
+    // Subheader
+    s1RowsXml += `<row r="${s1Row}" ht="26" customHeight="1">
+      <c r="A${s1Row}" s="1" t="inlineStr"><is><t>LIVE TRANSACTIONS &amp; EXECUTED FORWARD TRADES</t></is></c>
+    </row>`;
+    s1Row++;
+
+    // Forward Table Column Headers
     const s1Headers = ["Trade ID", "Time", "Asset", "Direction", "Tier", "Confluence Score", "Entry Price", "Exit Price", "Outcome"];
-    let s1RowsXml = `<row r="1" ht="24" customHeight="1">`;
+    s1RowsXml += `<row r="${s1Row}" ht="24" customHeight="1">`;
     s1Headers.forEach((h, idx) => {
-      s1RowsXml += `<c r="${colLetters(idx + 1)}1" s="2" t="inlineStr"><is><t>${escapeXml(h)}</t></is></c>`;
+      s1RowsXml += `<c r="${colLetters(idx + 1)}${s1Row}" s="2" t="inlineStr"><is><t>${escapeXml(h)}</t></is></c>`;
     });
     s1RowsXml += `</row>`;
+    s1Row++;
 
-    tradeLog.forEach((t, rIdx) => {
-      const rowNum = rIdx + 2;
+    // Forward Data Rows
+    tradeLog.forEach(t => {
       const dec = t.decimals !== undefined ? t.decimals : 3;
       const outStyle = t.outcome === "WIN" ? 9 : (t.outcome === "LOSS" ? 10 : 3);
 
-      s1RowsXml += `<row r="${rowNum}" ht="20" customHeight="1">
-        <c r="A${rowNum}" s="4" t="inlineStr"><is><t>${escapeXml(t.id)}</t></is></c>
-        <c r="B${rowNum}" s="3" t="inlineStr"><is><t>${escapeXml(t.time)}</t></is></c>
-        <c r="C${rowNum}" s="4" t="inlineStr"><is><t>${escapeXml(t.asset)}</t></is></c>
-        <c r="D${rowNum}" s="5" t="inlineStr"><is><t>${escapeXml(t.dir)}</t></is></c>
-        <c r="E${rowNum}" s="3" t="inlineStr"><is><t>${escapeXml(t.tier)}</t></is></c>
-        <c r="F${rowNum}" s="3"><v>${t.score || 0}</v></c>
-        <c r="G${rowNum}" s="3"><v>${Number(t.entry.toFixed(dec))}</v></c>
-        <c r="H${rowNum}" s="3"><v>${Number(t.exit.toFixed(dec))}</v></c>
-        <c r="I${rowNum}" s="${outStyle}" t="inlineStr"><is><t>${escapeXml(t.outcome)}</t></is></c>
+      s1RowsXml += `<row r="${s1Row}" ht="18" customHeight="1">
+        <c r="A${s1Row}" s="4" t="inlineStr"><is><t>${escapeXml(t.id)}</t></is></c>
+        <c r="B${s1Row}" s="3" t="inlineStr"><is><t>${escapeXml(t.time)}</t></is></c>
+        <c r="C${s1Row}" s="4" t="inlineStr"><is><t>${escapeXml(t.asset)}</t></is></c>
+        <c r="D${s1Row}" s="5" t="inlineStr"><is><t>${escapeXml(t.dir)}</t></is></c>
+        <c r="E${s1Row}" s="3" t="inlineStr"><is><t>${escapeXml(t.tier)}</t></is></c>
+        <c r="F${s1Row}" s="3"><v>${t.score || 0}</v></c>
+        <c r="G${s1Row}" s="3"><v>${Number(t.entry.toFixed(dec))}</v></c>
+        <c r="H${s1Row}" s="3"><v>${Number(t.exit.toFixed(dec))}</v></c>
+        <c r="I${s1Row}" s="${outStyle}" t="inlineStr"><is><t>${escapeXml(t.outcome)}</t></is></c>
       </row>`;
+      s1Row++;
     });
 
+    // Sheet 1 XML with showGridLines="0"
     const sheet1Xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetViews>
+    <sheetView workbookViewId="0" showGridLines="0"/>
+  </sheetViews>
   <cols>
     <col min="1" max="1" width="28" customWidth="1"/>
     <col min="2" max="2" width="14" customWidth="1"/>
@@ -919,7 +1092,9 @@
   <sheetData>${s1RowsXml}</sheetData>
 </worksheet>`;
 
-    // 2. Build Sheet 2: Polished Bank Statement Dashboard + Raw Candles
+    // ==============================================================
+    // SHEET 2: BACKWARD.TEST SUMMARY + ROW-BY-ROW STATUS
+    // ==============================================================
     const assetsToExport = [];
     if (assetVault.size > 0) {
       for (const [name, data] of assetVault.entries()) {
@@ -933,135 +1108,134 @@
     }
 
     let s2RowsXml = "";
-    let currentRow = 1;
+    let s2Row = 1;
 
     assetsToExport.forEach(item => {
       const cList = item.candles;
       const bt = computeBacktestData(cList);
-      const nowStr = new Date().toLocaleTimeString();
 
-      // TITLE BANNER
-      s2RowsXml += `<row r="${currentRow}" ht="28" customHeight="1">
-        <c r="A${currentRow}" s="1" t="inlineStr"><is><t>BACKWARD.TEST SUMMARY REPORT - ${escapeXml(item.name)}</t></is></c>
+      // Title Banner
+      s2RowsXml += `<row r="${s2Row}" ht="28" customHeight="1">
+        <c r="A${s2Row}" s="1" t="inlineStr"><is><t>BACKWARD.TEST SUMMARY REPORT - ${escapeXml(item.name)}</t></is></c>
       </row>`;
-      currentRow++;
+      s2Row++;
 
-      // METADATA DASHBOARD CARDS
-      s2RowsXml += `<row r="${currentRow}" ht="20" customHeight="1">
-        <c r="A${currentRow}" s="8" t="inlineStr"><is><t>Asset: ${escapeXml(item.name)}</t></is></c>
-        <c r="B${currentRow}" s="8" t="inlineStr"><is><t>TF: 1M Candle</t></is></c>
-        <c r="C${currentRow}" s="8" t="inlineStr"><is><t>History: ${cList.length} Bars (~${bt ? bt.spanHours : '0'} Hours)</t></is></c>
-        <c r="D${currentRow}" s="8"></c>
-        <c r="E${currentRow}" s="8" t="inlineStr"><is><t>Generated: ${nowStr}</t></is></c>
-        <c r="F${currentRow}" s="8"></c>
+      // Metadata Card
+      s2RowsXml += `<row r="${s2Row}" ht="20" customHeight="1">
+        <c r="A${s2Row}" s="8" t="inlineStr"><is><t>Asset: ${escapeXml(item.name)}</t></is></c>
+        <c r="B${s2Row}" s="8" t="inlineStr"><is><t>TF: 1M Candle</t></is></c>
+        <c r="C${s2Row}" s="8" t="inlineStr"><is><t>History: ${cList.length} Bars (~${bt ? bt.spanHours : '0'} Hours)</t></is></c>
+        <c r="D${s2Row}" s="8"></c>
+        <c r="E${s2Row}" s="8" t="inlineStr"><is><t>Generated: ${nowStr}</t></is></c>
+        <c r="F${s2Row}" s="8"></c>
       </row>`;
-      currentRow++;
+      s2Row++;
 
-      // SPACER
-      s2RowsXml += `<row r="${currentRow}" ht="12" customHeight="1"></row>`;
-      currentRow++;
+      // Spacer
+      s2RowsXml += `<row r="${s2Row}" ht="12" customHeight="1"></row>`;
+      s2Row++;
 
-      // TABLE HEADERS (Navy Slate)
-      s2RowsXml += `<row r="${currentRow}" ht="24" customHeight="1">
-        <c r="A${currentRow}" s="2" t="inlineStr"><is><t>Tier</t></is></c>
-        <c r="B${currentRow}" s="2" t="inlineStr"><is><t>Setups Count</t></is></c>
-        <c r="C${currentRow}" s="2" t="inlineStr"><is><t>Wins</t></is></c>
-        <c r="D${currentRow}" s="2" t="inlineStr"><is><t>Losses</t></is></c>
-        <c r="E${currentRow}" s="2" t="inlineStr"><is><t>Ties</t></is></c>
-        <c r="F${currentRow}" s="2" t="inlineStr"><is><t>Win Rate</t></is></c>
+      // Summary Table Header (Navy Slate)
+      s2RowsXml += `<row r="${s2Row}" ht="24" customHeight="1">
+        <c r="A${s2Row}" s="2" t="inlineStr"><is><t>Tier</t></is></c>
+        <c r="B${s2Row}" s="2" t="inlineStr"><is><t>Setups Count</t></is></c>
+        <c r="C${s2Row}" s="2" t="inlineStr"><is><t>Wins</t></is></c>
+        <c r="D${s2Row}" s="2" t="inlineStr"><is><t>Losses</t></is></c>
+        <c r="E${s2Row}" s="2" t="inlineStr"><is><t>Ties</t></is></c>
+        <c r="F${s2Row}" s="2" t="inlineStr"><is><t>Win Rate</t></is></c>
       </row>`;
-      currentRow++;
+      s2Row++;
 
       if (bt) {
         // Strong Row
-        s2RowsXml += `<row r="${currentRow}" ht="20" customHeight="1">
-          <c r="A${currentRow}" s="6" t="inlineStr"><is><t>Strong [S]</t></is></c>
-          <c r="B${currentRow}" s="5"><v>${bt.strongCount}</v></c>
-          <c r="C${currentRow}" s="3"><v>${bt.strongWins}</v></c>
-          <c r="D${currentRow}" s="3"><v>${bt.strongLosses}</v></c>
-          <c r="E${currentRow}" s="3"><v>${bt.strongTies}</v></c>
-          <c r="F${currentRow}" s="7"><v>${Number(bt.strongWr.toFixed(4))}</v></c>
+        s2RowsXml += `<row r="${s2Row}" ht="20" customHeight="1">
+          <c r="A${s2Row}" s="6" t="inlineStr"><is><t>Strong [S]</t></is></c>
+          <c r="B${s2Row}" s="5"><v>${bt.strongCount}</v></c>
+          <c r="C${s2Row}" s="3"><v>${bt.strongWins}</v></c>
+          <c r="D${s2Row}" s="3"><v>${bt.strongLosses}</v></c>
+          <c r="E${s2Row}" s="3"><v>${bt.strongTies}</v></c>
+          <c r="F${s2Row}" s="7"><v>${Number(bt.strongWr.toFixed(4))}</v></c>
         </row>`;
-        currentRow++;
+        s2Row++;
 
         // Bias Row
-        s2RowsXml += `<row r="${currentRow}" ht="20" customHeight="1">
-          <c r="A${currentRow}" s="6" t="inlineStr"><is><t>Bias [B]</t></is></c>
-          <c r="B${currentRow}" s="5"><v>${bt.biasCount}</v></c>
-          <c r="C${currentRow}" s="3"><v>${bt.biasWins}</v></c>
-          <c r="D${currentRow}" s="3"><v>${bt.biasLosses}</v></c>
-          <c r="E${currentRow}" s="3"><v>${bt.biasTies}</v></c>
-          <c r="F${currentRow}" s="7"><v>${Number(bt.biasWr.toFixed(4))}</v></c>
+        s2RowsXml += `<row r="${s2Row}" ht="20" customHeight="1">
+          <c r="A${s2Row}" s="6" t="inlineStr"><is><t>Bias [B]</t></is></c>
+          <c r="B${s2Row}" s="5"><v>${bt.biasCount}</v></c>
+          <c r="C${s2Row}" s="3"><v>${bt.biasWins}</v></c>
+          <c r="D${s2Row}" s="3"><v>${bt.biasLosses}</v></c>
+          <c r="E${s2Row}" s="3"><v>${bt.biasTies}</v></c>
+          <c r="F${s2Row}" s="7"><v>${Number(bt.biasWr.toFixed(4))}</v></c>
         </row>`;
-        currentRow++;
+        s2Row++;
 
         // Combined Total Row
-        s2RowsXml += `<row r="${currentRow}" ht="22" customHeight="1">
-          <c r="A${currentRow}" s="6" t="inlineStr"><is><t>Combined Total</t></is></c>
-          <c r="B${currentRow}" s="5"><v>${bt.totalCount}</v></c>
-          <c r="C${currentRow}" s="5"><v>${bt.totalWins}</v></c>
-          <c r="D${currentRow}" s="5"><v>${bt.totalLosses}</v></c>
-          <c r="E${currentRow}" s="5"><v>${bt.strongTies + bt.biasTies}</v></c>
-          <c r="F${currentRow}" s="7"><v>${Number(bt.totalWr.toFixed(4))}</v></c>
+        s2RowsXml += `<row r="${s2Row}" ht="22" customHeight="1">
+          <c r="A${s2Row}" s="6" t="inlineStr"><is><t>Combined Total</t></is></c>
+          <c r="B${s2Row}" s="5"><v>${bt.totalCount}</v></c>
+          <c r="C${s2Row}" s="5"><v>${bt.totalWins}</v></c>
+          <c r="D${s2Row}" s="5"><v>${bt.totalLosses}</v></c>
+          <c r="E${s2Row}" s="5"><v>${bt.strongTies + bt.biasTies}</v></c>
+          <c r="F${s2Row}" s="7"><v>${Number(bt.totalWr.toFixed(4))}</v></c>
         </row>`;
-        currentRow++;
+        s2Row++;
 
-        // SPACER
-        s2RowsXml += `<row r="${currentRow}" ht="12" customHeight="1"></row>`;
-        currentRow++;
+        // Spacer
+        s2RowsXml += `<row r="${s2Row}" ht="12" customHeight="1"></row>`;
+        s2Row++;
 
-        // STREAK ANALYSIS (Structured Grid)
-        s2RowsXml += `<row r="${currentRow}" ht="20" customHeight="1">
-          <c r="A${currentRow}" s="8" t="inlineStr"><is><t>Streak Analysis</t></is></c>
-          <c r="B${currentRow}" s="4" t="inlineStr"><is><t>Max Win Streak</t></is></c>
-          <c r="C${currentRow}" s="9" t="inlineStr"><is><t>${bt.maxWinStreak} Wins</t></is></c>
-          <c r="D${currentRow}" s="4" t="inlineStr"><is><t>Max Loss Streak</t></is></c>
-          <c r="E${currentRow}" s="10" t="inlineStr"><is><t>${bt.maxLossStreak} Losses</t></is></c>
-          <c r="F${currentRow}" s="3"></c>
+        // Streak Analysis
+        s2RowsXml += `<row r="${s2Row}" ht="20" customHeight="1">
+          <c r="A${s2Row}" s="8" t="inlineStr"><is><t>Streak Analysis</t></is></c>
+          <c r="B${s2Row}" s="4" t="inlineStr"><is><t>Max Win Streak</t></is></c>
+          <c r="C${s2Row}" s="9" t="inlineStr"><is><t>${bt.maxWinStreak} Wins</t></is></c>
+          <c r="D${s2Row}" s="4" t="inlineStr"><is><t>Max Loss Streak</t></is></c>
+          <c r="E${s2Row}" s="10" t="inlineStr"><is><t>${bt.maxLossStreak} Losses</t></is></c>
+          <c r="F${s2Row}" s="3"></c>
         </row>`;
-        currentRow++;
+        s2Row++;
 
-        // BAR ACCOUNTING (Structured Grid)
-        s2RowsXml += `<row r="${currentRow}" ht="20" customHeight="1">
-          <c r="A${currentRow}" s="8" t="inlineStr"><is><t>Bar Accounting</t></is></c>
-          <c r="B${currentRow}" s="4" t="inlineStr"><is><t>Traded Setups</t></is></c>
-          <c r="C${currentRow}" s="5"><v>${bt.totalCount}</v></c>
-          <c r="D${currentRow}" s="4" t="inlineStr"><is><t>Neutral (Skipped)</t></is></c>
-          <c r="E${currentRow}" s="3"><v>${bt.skippedNeutral}</v></c>
-          <c r="F${currentRow}" s="3" t="inlineStr"><is><t>20 Warmup</t></is></c>
+        // Bar Accounting
+        s2RowsXml += `<row r="${s2Row}" ht="20" customHeight="1">
+          <c r="A${s2Row}" s="8" t="inlineStr"><is><t>Bar Accounting</t></is></c>
+          <c r="B${s2Row}" s="4" t="inlineStr"><is><t>Traded Setups</t></is></c>
+          <c r="C${s2Row}" s="5"><v>${bt.totalCount}</v></c>
+          <c r="D${s2Row}" s="4" t="inlineStr"><is><t>Neutral (Skipped)</t></is></c>
+          <c r="E${s2Row}" s="3"><v>${bt.skippedNeutral}</v></c>
+          <c r="F${s2Row}" s="3" t="inlineStr"><is><t>20 Warmup</t></is></c>
         </row>`;
-        currentRow++;
+        s2Row++;
       } else {
-        s2RowsXml += `<row r="${currentRow}" ht="20" customHeight="1">
-          <c r="A${currentRow}" s="4" t="inlineStr"><is><t>Insufficient candle history for backtest calculation (&lt; 25 bars).</t></is></c>
+        s2RowsXml += `<row r="${s2Row}" ht="20" customHeight="1">
+          <c r="A${s2Row}" s="4" t="inlineStr"><is><t>Insufficient candle history for backtest calculation (&lt; 25 bars).</t></is></c>
         </row>`;
-        currentRow++;
+        s2Row++;
       }
 
-      // SPACER
-      s2RowsXml += `<row r="${currentRow}" ht="14" customHeight="1"></row>`;
-      currentRow++;
+      // Spacer
+      s2RowsXml += `<row r="${s2Row}" ht="14" customHeight="1"></row>`;
+      s2Row++;
 
-      // SECTION TITLE
-      s2RowsXml += `<row r="${currentRow}" ht="26" customHeight="1">
-        <c r="A${currentRow}" s="1" t="inlineStr"><is><t>HISTORICAL 1-MINUTE RAW CANDLES &amp; ROW-BY-ROW SIGNAL STATUS</t></is></c>
+      // Subheader
+      s2RowsXml += `<row r="${s2Row}" ht="26" customHeight="1">
+        <c r="A${s2Row}" s="1" t="inlineStr"><is><t>HISTORICAL 1-MINUTE RAW CANDLES &amp; ROW-BY-ROW SIGNAL STATUS</t></is></c>
       </row>`;
-      currentRow++;
+      s2Row++;
 
-      // CANDLE TABLE HEADERS (Navy Slate)
+      // Candle Headers
       const s2Headers = [
         "Timestamp", "Time", "Asset", "Open", "High", "Low", "Close", 
         "RSI (14)", "Support (20-bar)", "Resistance (20-bar)", 
         "Signal Triggered", "Trade Outcome"
       ];
-      s2RowsXml += `<row r="${currentRow}" ht="24" customHeight="1">`;
+      s2RowsXml += `<row r="${s2Row}" ht="24" customHeight="1">`;
       s2Headers.forEach((h, idx) => {
-        s2RowsXml += `<c r="${colLetters(idx + 1)}${currentRow}" s="2" t="inlineStr"><is><t>${escapeXml(h)}</t></is></c>`;
+        s2RowsXml += `<c r="${colLetters(idx + 1)}${s2Row}" s="2" t="inlineStr"><is><t>${escapeXml(h)}</t></is></c>`;
       });
       s2RowsXml += `</row>`;
-      currentRow++;
+      s2Row++;
 
-      // CANDLE DATA ROWS
+      // Candle Data Rows
       for (let i = 0; i < cList.length; i++) {
         const c = cList[i];
         const sub = cList.slice(0, i + 1);
@@ -1115,29 +1289,33 @@
           outStyle = 3;
         }
 
-        s2RowsXml += `<row r="${currentRow}" ht="18" customHeight="1">
-          <c r="A${currentRow}" s="3"><v>${c.time}</v></c>
-          <c r="B${currentRow}" s="3" t="inlineStr"><is><t>${timeStr}</t></is></c>
-          <c r="C${currentRow}" s="4" t="inlineStr"><is><t>${escapeXml(item.name)}</t></is></c>
-          <c r="D${currentRow}" s="3"><v>${Number(c.open.toFixed(item.dec))}</v></c>
-          <c r="E${currentRow}" s="3"><v>${Number(c.high.toFixed(item.dec))}</v></c>
-          <c r="F${currentRow}" s="3"><v>${Number(c.low.toFixed(item.dec))}</v></c>
-          <c r="G${currentRow}" s="3"><v>${Number(c.close.toFixed(item.dec))}</v></c>
-          ${rsiVal !== null ? `<c r="H${currentRow}" s="3"><v>${Number(rsiVal.toFixed(1))}</v></c>` : `<c r="H${currentRow}" s="3" t="inlineStr"><is><t>--</t></is></c>`}
-          ${srVal.s !== null ? `<c r="I${currentRow}" s="3"><v>${Number(srVal.s.toFixed(item.dec))}</v></c>` : `<c r="I${currentRow}" s="3" t="inlineStr"><is><t>--</t></is></c>`}
-          ${srVal.r !== null ? `<c r="J${currentRow}" s="3"><v>${Number(srVal.r.toFixed(item.dec))}</v></c>` : `<c r="J${currentRow}" s="3" t="inlineStr"><is><t>--</t></is></c>`}
-          <c r="K${currentRow}" s="4" t="inlineStr"><is><t>${escapeXml(sigText)}</t></is></c>
-          <c r="L${currentRow}" s="${outStyle}" t="inlineStr"><is><t>${escapeXml(outcomeText)}</t></is></c>
+        s2RowsXml += `<row r="${s2Row}" ht="18" customHeight="1">
+          <c r="A${s2Row}" s="3"><v>${c.time}</v></c>
+          <c r="B${s2Row}" s="3" t="inlineStr"><is><t>${timeStr}</t></is></c>
+          <c r="C${s2Row}" s="4" t="inlineStr"><is><t>${escapeXml(item.name)}</t></is></c>
+          <c r="D${s2Row}" s="3"><v>${Number(c.open.toFixed(item.dec))}</v></c>
+          <c r="E${s2Row}" s="3"><v>${Number(c.high.toFixed(item.dec))}</v></c>
+          <c r="F${s2Row}" s="3"><v>${Number(c.low.toFixed(item.dec))}</v></c>
+          <c r="G${s2Row}" s="3"><v>${Number(c.close.toFixed(item.dec))}</v></c>
+          ${rsiVal !== null ? `<c r="H${s2Row}" s="3"><v>${Number(rsiVal.toFixed(1))}</v></c>` : `<c r="H${s2Row}" s="3" t="inlineStr"><is><t>--</t></is></c>`}
+          ${srVal.s !== null ? `<c r="I${s2Row}" s="3"><v>${Number(srVal.s.toFixed(item.dec))}</v></c>` : `<c r="I${s2Row}" s="3" t="inlineStr"><is><t>--</t></is></c>`}
+          ${srVal.r !== null ? `<c r="J${s2Row}" s="3"><v>${Number(srVal.r.toFixed(item.dec))}</v></c>` : `<c r="J${s2Row}" s="3" t="inlineStr"><is><t>--</t></is></c>`}
+          <c r="K${s2Row}" s="4" t="inlineStr"><is><t>${escapeXml(sigText)}</t></is></c>
+          <c r="L${s2Row}" s="${outStyle}" t="inlineStr"><is><t>${escapeXml(outcomeText)}</t></is></c>
         </row>`;
-        currentRow++;
+        s2Row++;
       }
 
-      s2RowsXml += `<row r="${currentRow}" ht="14" customHeight="1"></row>`;
-      currentRow++;
+      s2RowsXml += `<row r="${s2Row}" ht="14" customHeight="1"></row>`;
+      s2Row++;
     });
 
+    // Sheet 2 XML with showGridLines="0"
     const sheet2Xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetViews>
+    <sheetView workbookViewId="0" showGridLines="0"/>
+  </sheetViews>
   <cols>
     <col min="1" max="1" width="22" customWidth="1"/>
     <col min="2" max="2" width="16" customWidth="1"/>
@@ -1155,7 +1333,7 @@
   <sheetData>${s2RowsXml}</sheetData>
 </worksheet>`;
 
-    // 3. Package OpenXML Container Files with Compliant Stylesheet
+    // OpenXML Package Files
     const files = [
       {
         name: "[Content_Types].xml",
@@ -1485,7 +1663,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.33</small>
+          <strong>QX Assistant</strong> <small>v1.4.34</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-sound-strong" class="qx-audio-btn" title="Toggle Strong Alerts (Triple Fanfare x3)">${strongSoundEnabled ? "S:🔊" : "S:🔇"}</button>
@@ -1550,7 +1728,7 @@
             </div>
             <div id="qx-forward-controls" class="qx-tab-actions">
               <span id="qx-log-summary" class="qx-log-pill">0W - 0L (0%)</span>
-              <button id="qx-btn-export-log" class="qx-export-btn" title="Export Polished Native .xlsx Workbook">Export</button>
+              <button id="qx-btn-export-log" class="qx-export-btn" title="Export Dashboard Style Native .xlsx Workbook">Export</button>
               <button id="qx-btn-clear-log" class="qx-clear-btn" title="Reset Shared Session Log Across Windows">Clr</button>
             </div>
             <div id="qx-backtest-controls" class="qx-tab-actions qx-hidden">

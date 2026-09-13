@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.4.33",
-  "description": "Read-only assistant with polished OpenXML .xlsx styling, auto column widths, native percentage formatting, and row-by-row candle audit.",
+  "version": "1.4.34",
+  "description": "Read-only assistant with Executive Dashboard Excel export, Forward/Backward summary KPI cards, borderless canvas, and cross-window sync.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",
