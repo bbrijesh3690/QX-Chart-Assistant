@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.4.13",
-  "description": "Read-only assistant with dual-tier audio synthesizer for Strong and Bias signals with independent mute toggles.",
+  "version": "1.4.14",
+  "description": "Read-only assistant with boosted loud Web Audio engine, 4 selectable sound profiles, and live preview test.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",
