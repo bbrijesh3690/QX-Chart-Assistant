@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.4.29",
-  "description": "Read-only assistant with 2-sheet Excel Workbook export (Forward Trades + Historical Candles), 1000-trade retention buffer, and cross-window sync.",
+  "version": "1.4.30",
+  "description": "Read-only assistant with native 2-sheet .xlsx Excel container, 1000-trade retention buffer, and cross-window sync.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",

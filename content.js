@@ -1,7 +1,7 @@
 (function () {
-  const VAULT_KEY = "__QX_ASSET_VAULT_V26__";
-  const LOG_KEY = "__QX_SHARED_LOG_V14__";
-  const PENDING_KEY = "__QX_SHARED_PENDING_V12__";
+  const VAULT_KEY = "__QX_ASSET_VAULT_V27__";
+  const LOG_KEY = "__QX_SHARED_LOG_V15__";
+  const PENDING_KEY = "__QX_SHARED_PENDING_V13__";
 
   const assetVault = new Map();
   const globalHistoryPool = [];
@@ -93,7 +93,6 @@
       outcome: outcome
     });
 
-    // 1,000 Trades Capacity for Long 3-Hour Multi-Asset Runs
     if (tradeLog.length > 1000) tradeLog.pop();
     saveLog(true);
     if (activeTab === "FORWARD") renderLogUI();
@@ -664,8 +663,118 @@
   }
 
   // ==============================================================
-  // 2-SHEET EXCEL WORKBOOK GENERATOR (Forward Trades + Candles)
+  // ZERO-DEPENDENCY NATIVE OPENXML (.XLSX) BUILDER
   // ==============================================================
+  const crcTable = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let k = 0; k < 8; k++) c = ((c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1));
+    crcTable[i] = c;
+  }
+  function calcCrc32(bytes) {
+    let crc = 0xFFFFFFFF;
+    for (let i = 0; i < bytes.length; i++) crc = (crc >>> 8) ^ crcTable[(crc ^ bytes[i]) & 0xFF];
+    return (crc ^ 0xFFFFFFFF) >>> 0;
+  }
+
+  function makeZipBlob(files) {
+    const encoder = new TextEncoder();
+    const entries = files.map(f => {
+      const nameBytes = encoder.encode(f.name);
+      const dataBytes = typeof f.data === "string" ? encoder.encode(f.data) : f.data;
+      const crc = calcCrc32(dataBytes);
+      return { nameBytes, dataBytes, crc, size: dataBytes.length };
+    });
+
+    let totalLen = 0;
+    entries.forEach(e => {
+      totalLen += 30 + e.nameBytes.length + e.size; // Local header
+      totalLen += 46 + e.nameBytes.length; // Central directory
+    });
+    totalLen += 22; // EOCD
+
+    const buf = new Uint8Array(totalLen);
+    const view = new DataView(buf.buffer);
+    let offset = 0;
+    const cdList = [];
+
+    // Local headers & content
+    entries.forEach(e => {
+      const localOffset = offset;
+      view.setUint32(offset, 0x04034b50, true);
+      view.setUint16(offset + 4, 10, true);
+      view.setUint16(offset + 6, 0, true);
+      view.setUint16(offset + 8, 0, true); // Stored (no compression)
+      view.setUint16(offset + 10, 0, true);
+      view.setUint16(offset + 12, 0, true);
+      view.setUint32(offset + 14, e.crc, true);
+      view.setUint32(offset + 18, e.size, true);
+      view.setUint32(offset + 22, e.size, true);
+      view.setUint16(offset + 26, e.nameBytes.length, true);
+      view.setUint16(offset + 28, 0, true);
+      offset += 30;
+
+      buf.set(e.nameBytes, offset);
+      offset += e.nameBytes.length;
+
+      buf.set(e.dataBytes, offset);
+      offset += e.size;
+
+      cdList.push({ ...e, localOffset });
+    });
+
+    const cdStart = offset;
+
+    // Central Directory
+    cdList.forEach(e => {
+      view.setUint32(offset, 0x02014b50, true);
+      view.setUint16(offset + 4, 20, true);
+      view.setUint16(offset + 6, 10, true);
+      view.setUint16(offset + 8, 0, true);
+      view.setUint16(offset + 10, 0, true);
+      view.setUint16(offset + 12, 0, true);
+      view.setUint16(offset + 14, 0, true);
+      view.setUint32(offset + 16, e.crc, true);
+      view.setUint32(offset + 20, e.size, true);
+      view.setUint32(offset + 24, e.size, true);
+      view.setUint16(offset + 28, e.nameBytes.length, true);
+      view.setUint16(offset + 30, 0, true);
+      view.setUint16(offset + 32, 0, true);
+      view.setUint16(offset + 34, 0, true);
+      view.setUint16(offset + 36, 0, true);
+      view.setUint32(offset + 38, 0, true);
+      view.setUint32(offset + 42, e.localOffset, true);
+      offset += 46;
+
+      buf.set(e.nameBytes, offset);
+      offset += e.nameBytes.length;
+    });
+
+    const cdSize = offset - cdStart;
+
+    // End of Central Directory
+    view.setUint32(offset, 0x06054b50, true);
+    view.setUint16(offset + 4, 0, true);
+    view.setUint16(offset + 6, 0, true);
+    view.setUint16(offset + 8, cdList.length, true);
+    view.setUint16(offset + 10, cdList.length, true);
+    view.setUint32(offset + 12, cdSize, true);
+    view.setUint32(offset + 16, cdStart, true);
+    view.setUint16(offset + 20, 0, true);
+
+    return new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  }
+
+  function colLetters(n) {
+    let s = "";
+    while (n > 0) {
+      let m = (n - 1) % 26;
+      s = String.fromCharCode(65 + m) + s;
+      n = Math.floor((n - m) / 26);
+    }
+    return s;
+  }
+
   function escapeXml(str) {
     if (str === null || str === undefined) return "";
     return String(str)
@@ -676,56 +785,45 @@
       .replace(/'/g, "&apos;");
   }
 
-  function exportTwoSheetWorkbook() {
+  function exportTwoSheetWorkbookXlsx() {
     loadLog();
 
-    // 1. Build Sheet 1: Forward.test Trades
-    let sheet1Rows = `
-      <Row>
-        <Cell><Data ss:Type="String">Trade ID</Data></Cell>
-        <Cell><Data ss:Type="String">Time</Data></Cell>
-        <Cell><Data ss:Type="String">Asset</Data></Cell>
-        <Cell><Data ss:Type="String">Direction</Data></Cell>
-        <Cell><Data ss:Type="String">Tier</Data></Cell>
-        <Cell><Data ss:Type="String">Confluence Score</Data></Cell>
-        <Cell><Data ss:Type="String">Entry Price</Data></Cell>
-        <Cell><Data ss:Type="String">Exit Price</Data></Cell>
-        <Cell><Data ss:Type="String">Outcome</Data></Cell>
-      </Row>
-    `;
+    // 1. Build Sheet 1 (Forward Trades) XML
+    const s1Headers = ["Trade ID", "Time", "Asset", "Direction", "Tier", "Confluence Score", "Entry Price", "Exit Price", "Outcome"];
+    let s1RowsXml = `<row r="1">`;
+    s1Headers.forEach((h, idx) => {
+      s1RowsXml += `<c r="${colLetters(idx + 1)}1" t="inlineStr"><is><t>${escapeXml(h)}</t></is></c>`;
+    });
+    s1RowsXml += `</row>`;
 
-    tradeLog.forEach(t => {
+    tradeLog.forEach((t, rIdx) => {
+      const rowNum = rIdx + 2;
       const dec = t.decimals !== undefined ? t.decimals : 3;
-      sheet1Rows += `
-        <Row>
-          <Cell><Data ss:Type="String">${escapeXml(t.id)}</Data></Cell>
-          <Cell><Data ss:Type="String">${escapeXml(t.time)}</Data></Cell>
-          <Cell><Data ss:Type="String">${escapeXml(t.asset)}</Data></Cell>
-          <Cell><Data ss:Type="String">${escapeXml(t.dir)}</Data></Cell>
-          <Cell><Data ss:Type="String">${escapeXml(t.tier)}</Data></Cell>
-          <Cell><Data ss:Type="Number">${t.score || 0}</Data></Cell>
-          <Cell><Data ss:Type="Number">${Number(t.entry.toFixed(dec))}</Data></Cell>
-          <Cell><Data ss:Type="Number">${Number(t.exit.toFixed(dec))}</Data></Cell>
-          <Cell><Data ss:Type="String">${escapeXml(t.outcome)}</Data></Cell>
-        </Row>
-      `;
+      s1RowsXml += `<row r="${rowNum}">
+        <c r="A${rowNum}" t="inlineStr"><is><t>${escapeXml(t.id)}</t></is></c>
+        <c r="B${rowNum}" t="inlineStr"><is><t>${escapeXml(t.time)}</t></is></c>
+        <c r="C${rowNum}" t="inlineStr"><is><t>${escapeXml(t.asset)}</t></is></c>
+        <c r="D${rowNum}" t="inlineStr"><is><t>${escapeXml(t.dir)}</t></is></c>
+        <c r="E${rowNum}" t="inlineStr"><is><t>${escapeXml(t.tier)}</t></is></c>
+        <c r="F${rowNum}"><v>${t.score || 0}</v></c>
+        <c r="G${rowNum}"><v>${Number(t.entry.toFixed(dec))}</v></c>
+        <c r="H${rowNum}"><v>${Number(t.exit.toFixed(dec))}</v></c>
+        <c r="I${rowNum}" t="inlineStr"><is><t>${escapeXml(t.outcome)}</t></is></c>
+      </row>`;
     });
 
-    // 2. Build Sheet 2: Historical 1M Candles (Across all assets in vault)
-    let sheet2Rows = `
-      <Row>
-        <Cell><Data ss:Type="String">Timestamp</Data></Cell>
-        <Cell><Data ss:Type="String">Time</Data></Cell>
-        <Cell><Data ss:Type="String">Asset</Data></Cell>
-        <Cell><Data ss:Type="String">Open</Data></Cell>
-        <Cell><Data ss:Type="String">High</Data></Cell>
-        <Cell><Data ss:Type="String">Low</Data></Cell>
-        <Cell><Data ss:Type="String">Close</Data></Cell>
-        <Cell><Data ss:Type="String">RSI (14)</Data></Cell>
-        <Cell><Data ss:Type="String">Support (20-bar)</Data></Cell>
-        <Cell><Data ss:Type="String">Resistance (20-bar)</Data></Cell>
-      </Row>
-    `;
+    const sheet1Xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>${s1RowsXml}</sheetData>
+</worksheet>`;
+
+    // 2. Build Sheet 2 (Historical 1M Candles) XML
+    const s2Headers = ["Timestamp", "Time", "Asset", "Open", "High", "Low", "Close", "RSI (14)", "Support (20-bar)", "Resistance (20-bar)"];
+    let s2RowsXml = `<row r="1">`;
+    s2Headers.forEach((h, idx) => {
+      s2RowsXml += `<c r="${colLetters(idx + 1)}1" t="inlineStr"><is><t>${escapeXml(h)}</t></is></c>`;
+    });
+    s2RowsXml += `</row>`;
 
     const assetsToExport = [];
     if (assetVault.size > 0) {
@@ -739,6 +837,7 @@
       assetsToExport.push({ name: activeAsset, candles: state.candles1m, dec: state.decimals || 3 });
     }
 
+    let currentRow = 2;
     assetsToExport.forEach(item => {
       const cList = item.candles;
       for (let i = 0; i < cList.length; i++) {
@@ -749,57 +848,95 @@
         const d = new Date(c.time);
         const timeStr = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
 
-        sheet2Rows += `
-          <Row>
-            <Cell><Data ss:Type="Number">${c.time}</Data></Cell>
-            <Cell><Data ss:Type="String">${timeStr}</Data></Cell>
-            <Cell><Data ss:Type="String">${escapeXml(item.name)}</Data></Cell>
-            <Cell><Data ss:Type="Number">${Number(c.open.toFixed(item.dec))}</Data></Cell>
-            <Cell><Data ss:Type="Number">${Number(c.high.toFixed(item.dec))}</Data></Cell>
-            <Cell><Data ss:Type="Number">${Number(c.low.toFixed(item.dec))}</Data></Cell>
-            <Cell><Data ss:Type="Number">${Number(c.close.toFixed(item.dec))}</Data></Cell>
-            <Cell><Data ss:Type="${rsiVal !== null ? 'Number' : 'String'}">${rsiVal !== null ? Number(rsiVal.toFixed(1)) : '--'}</Data></Cell>
-            <Cell><Data ss:Type="${srVal.s !== null ? 'Number' : 'String'}">${srVal.s !== null ? Number(srVal.s.toFixed(item.dec)) : '--'}</Data></Cell>
-            <Cell><Data ss:Type="${srVal.r !== null ? 'Number' : 'String'}">${srVal.r !== null ? Number(srVal.r.toFixed(item.dec)) : '--'}</Data></Cell>
-          </Row>
-        `;
+        s2RowsXml += `<row r="${currentRow}">
+          <c r="A${currentRow}"><v>${c.time}</v></c>
+          <c r="B${currentRow}" t="inlineStr"><is><t>${timeStr}</t></is></c>
+          <c r="C${currentRow}" t="inlineStr"><is><t>${escapeXml(item.name)}</t></is></c>
+          <c r="D${currentRow}"><v>${Number(c.open.toFixed(item.dec))}</v></c>
+          <c r="E${currentRow}"><v>${Number(c.high.toFixed(item.dec))}</v></c>
+          <c r="F${currentRow}"><v>${Number(c.low.toFixed(item.dec))}</v></c>
+          <c r="G${currentRow}"><v>${Number(c.close.toFixed(item.dec))}</v></c>
+          ${rsiVal !== null ? `<c r="H${currentRow}"><v>${Number(rsiVal.toFixed(1))}</v></c>` : `<c r="H${currentRow}" t="inlineStr"><is><t>--</t></is></c>`}
+          ${srVal.s !== null ? `<c r="I${currentRow}"><v>${Number(srVal.s.toFixed(item.dec))}</v></c>` : `<c r="I${currentRow}" t="inlineStr"><is><t>--</t></is></c>`}
+          ${srVal.r !== null ? `<c r="J${currentRow}"><v>${Number(srVal.r.toFixed(item.dec))}</v></c>` : `<c r="J${currentRow}" t="inlineStr"><is><t>--</t></is></c>`}
+        </row>`;
+        currentRow++;
       }
     });
 
-    // 3. Assemble Excel 2003 XML Workbook
-    const xml = `<?xml version="1.0"?>
-<?mso-application progid="Excel.Sheet"?>
-<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
- xmlns:o="urn:schemas-microsoft-com:office:office"
- xmlns:x="urn:schemas-microsoft-com:office:excel"
- xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
- xmlns:html="http://www.w3.org/TR/REC-html40">
- <Styles>
-  <Style ss:ID="Default" ss:Name="Normal">
-   <Alignment ss:Vertical="Center"/>
-   <Borders/>
-   <Font ss:FontName="Calibri" x:Family="Swiss" ss:Size="11" ss:Color="#000000"/>
-  </Style>
- </Styles>
- <Worksheet ss:Name="Forward.test Trades">
-  <Table>
-   ${sheet1Rows}
-  </Table>
- </Worksheet>
- <Worksheet ss:Name="Historical 1M Candles">
-  <Table>
-   ${sheet2Rows}
-  </Table>
- </Worksheet>
-</Workbook>`;
+    const sheet2Xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>${s2RowsXml}</sheetData>
+</worksheet>`;
 
-    const blob = new Blob([xml], { type: "application/vnd.ms-excel;charset=utf-8" });
+    // 3. Package OpenXML Container Files
+    const files = [
+      {
+        name: "[Content_Types].xml",
+        data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+</Types>`
+      },
+      {
+        name: "_rels/.rels",
+        data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`
+      },
+      {
+        name: "xl/_rels/workbook.xml.rels",
+        data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`
+      },
+      {
+        name: "xl/workbook.xml",
+        data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Forward.test Trades" sheetId="1" r:id="rId1"/>
+    <sheet name="Historical 1M Candles" sheetId="2" r:id="rId2"/>
+  </sheets>
+</workbook>`
+      },
+      {
+        name: "xl/styles.xml",
+        data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>
+  <fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>
+  <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs>
+</styleSheet>`
+      },
+      {
+        name: "xl/worksheets/sheet1.xml",
+        data: sheet1Xml
+      },
+      {
+        name: "xl/worksheets/sheet2.xml",
+        data: sheet2Xml
+      }
+    ];
+
+    const zipBlob = makeZipBlob(files);
     const now = new Date();
     const dateStamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
-    const fileName = `QX_Session_Workbook_${dateStamp}.xls`;
+    const fileName = `QX_Session_Workbook_${dateStamp}.xlsx`;
 
     const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
+    link.href = URL.createObjectURL(zipBlob);
     link.download = fileName;
     document.body.appendChild(link);
     link.click();
@@ -1105,7 +1242,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.29</small>
+          <strong>QX Assistant</strong> <small>v1.4.30</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-sound-strong" class="qx-audio-btn" title="Toggle Strong Alerts (Triple Fanfare x3)">${strongSoundEnabled ? "S:🔊" : "S:🔇"}</button>
@@ -1170,7 +1307,7 @@
             </div>
             <div id="qx-forward-controls" class="qx-tab-actions">
               <span id="qx-log-summary" class="qx-log-pill">0W - 0L (0%)</span>
-              <button id="qx-btn-export-log" class="qx-export-btn" title="Export Excel Workbook with Forward Trades & Historical Candles">Export</button>
+              <button id="qx-btn-export-log" class="qx-export-btn" title="Export Native .xlsx Workbook with Forward Trades & Historical Candles">Export</button>
               <button id="qx-btn-clear-log" class="qx-clear-btn" title="Reset Shared Session Log Across Windows">Clr</button>
             </div>
             <div id="qx-backtest-controls" class="qx-tab-actions qx-hidden">
@@ -1296,7 +1433,7 @@
 
     const btnExport = document.getElementById("qx-btn-export-log");
     btnExport.addEventListener("click", () => {
-      exportTwoSheetWorkbook();
+      exportTwoSheetWorkbookXlsx();
     });
 
     const pairFilterEl = document.getElementById("qx-log-pair-filter");
