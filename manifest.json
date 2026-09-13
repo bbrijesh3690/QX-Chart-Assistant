@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.4.22",
-  "description": "Read-only assistant with dual-tab Forward-Test & Backtest drawer, cross-window sync, and clean header layout.",
+  "version": "1.4.23",
+  "description": "Read-only assistant with persistent per-asset backtest cache, non-destructive tab switching, and clean unbracketed controls.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",

@@ -1,10 +1,11 @@
 (function () {
-  const VAULT_KEY = "__QX_ASSET_VAULT_V20__";
-  const LOG_KEY = "__QX_SHARED_LOG_V8__";
-  const PENDING_KEY = "__QX_SHARED_PENDING_V6__";
+  const VAULT_KEY = "__QX_ASSET_VAULT_V21__";
+  const LOG_KEY = "__QX_SHARED_LOG_V9__";
+  const PENDING_KEY = "__QX_SHARED_PENDING_V7__";
 
   const assetVault = new Map();
   const globalHistoryPool = [];
+  const backtestCache = new Map(); // Asset -> Cached Backtest Result
 
   // ==========================================
   // CROSS-WINDOW BROADCAST CHANNEL ENGINE
@@ -14,7 +15,7 @@
   let tradeLog = [];
   let pendingTrades = [];
   let currentLogFilter = "ALL";
-  let activeTab = "FORWARD"; // "FORWARD" or "BACKTEST"
+  let activeTab = "FORWARD";
 
   function loadLog() {
     try {
@@ -44,7 +45,7 @@
     syncChannel.onmessage = (e) => {
       if (e.data?.type === "QX_SYNC_LOG_UPDATE") {
         loadLog();
-        renderLogUI();
+        if (activeTab === "FORWARD") renderLogUI();
       }
     };
   }
@@ -52,7 +53,7 @@
   window.addEventListener("storage", (e) => {
     if (e.key === LOG_KEY || e.key === PENDING_KEY) {
       loadLog();
-      renderLogUI();
+      if (activeTab === "FORWARD") renderLogUI();
     }
   });
 
@@ -93,7 +94,7 @@
 
     if (tradeLog.length > 40) tradeLog.pop();
     saveLog(true);
-    renderLogUI();
+    if (activeTab === "FORWARD") renderLogUI();
   }
 
   function reconcilePendingTrades(assetName, candles, currentCandleTime) {
@@ -374,7 +375,6 @@
         saveVault();
         reconcilePendingTrades(activeAsset, state.candles1m, state.currentCandle?.time);
         updateUI();
-        if (activeTab === "BACKTEST") renderBacktestUI();
         break;
       }
     }
@@ -389,7 +389,11 @@
     reconcilePendingTrades(activeAsset, state.candles1m, state.currentCandle?.time);
     saveVault();
     updateUI();
-    if (activeTab === "BACKTEST") renderBacktestUI();
+
+    // Preserve Backtest View: shows cached stats for this asset if already run, without wiping
+    if (activeTab === "BACKTEST") {
+      renderBacktestUI();
+    }
   }
 
   document.addEventListener("pointerdown", (e) => {
@@ -515,7 +519,6 @@
       reconcilePendingTrades(activeAsset, state.candles1m, state.currentCandle?.time);
       saveVault();
       updateUI();
-      if (activeTab === "BACKTEST") renderBacktestUI();
       return;
     }
 
@@ -526,7 +529,6 @@
         saveVault();
         if (name === activeAsset) {
           updateUI();
-          if (activeTab === "BACKTEST") renderBacktestUI();
         }
         return;
       }
@@ -621,7 +623,180 @@
   }
 
   // ==========================================
-  // RENDER DUAL DRAWER: FORWARD-TEST & BACKTEST
+  // PERSISTENT PER-ASSET BACKTEST ENGINE
+  // ==========================================
+  function runBacktestForActiveAsset() {
+    const candles = state.candles1m;
+    const btContainer = document.getElementById("qx-bt-content");
+    if (!btContainer) return;
+
+    if (!candles || candles.length < 25) {
+      btContainer.innerHTML = `
+        <div class="qx-bt-prompt" style="color: #fca5a5;">
+          ⚠️ Need >= 25 loaded 1m candles for <strong>${activeAsset}</strong> (currently has ${candles ? candles.length : 0}).
+          <br><span style="color: #64748b; font-size: 9.5px;">Click <strong>[Sync]</strong> above to ingest chart history, then click <strong>Run</strong>.</span>
+        </div>
+      `;
+      return;
+    }
+
+    let strongWins = 0, strongLosses = 0, strongTies = 0, strongCount = 0;
+    let biasWins = 0, biasLosses = 0, biasTies = 0, biasCount = 0;
+    let currentStreak = 0, maxStreak = 0;
+
+    for (let i = 20; i < candles.length - 1; i++) {
+      const subCandles = candles.slice(0, i + 1);
+      const m5 = getAggregate(subCandles, null, 5);
+      const m15 = getAggregate(subCandles, null, 15);
+      const rsi = calcRSI(subCandles, 14);
+      const sr = calcSR(subCandles);
+
+      let trend15m = "Neutral";
+      if (m15.length >= 1) {
+        const last15 = m15[m15.length - 1];
+        trend15m = last15.close >= last15.open ? "Bullish" : "Bearish";
+      }
+
+      let trend5m = "Neutral";
+      if (m5.length >= 2) {
+        const cur5 = m5[m5.length - 1];
+        const prev5 = m5[m5.length - 2];
+        trend5m = cur5.close >= prev5.close ? "Bullish" : "Bearish";
+      }
+
+      const price = subCandles[subCandles.length - 1].close;
+      const verdict = evaluateConfluence(trend15m, trend5m, rsi, price, sr);
+
+      if (verdict.dir !== "NONE") {
+        const targetCandle = candles[i + 1];
+        const entry = targetCandle.open;
+        const exit = targetCandle.close;
+
+        let outcome = "TIE";
+        if (verdict.dir === "CALL") {
+          outcome = exit > entry ? "WIN" : (exit < entry ? "LOSS" : "TIE");
+        } else if (verdict.dir === "PUT") {
+          outcome = exit < entry ? "WIN" : (exit > entry ? "LOSS" : "TIE");
+        }
+
+        if (verdict.tier === "STRONG") {
+          strongCount++;
+          if (outcome === "WIN") strongWins++;
+          else if (outcome === "LOSS") strongLosses++;
+          else strongTies++;
+        } else if (verdict.tier === "BIAS") {
+          biasCount++;
+          if (outcome === "WIN") biasWins++;
+          else if (outcome === "LOSS") biasLosses++;
+          else biasTies++;
+        }
+
+        if (outcome === "WIN") {
+          currentStreak++;
+          if (currentStreak > maxStreak) maxStreak = currentStreak;
+        } else if (outcome === "LOSS") {
+          currentStreak = 0;
+        }
+      }
+    }
+
+    const totalCount = strongCount + biasCount;
+    const totalWins = strongWins + biasWins;
+    const totalLosses = strongLosses + biasLosses;
+
+    const strongDecided = strongWins + strongLosses;
+    const strongWr = strongDecided > 0 ? ((strongWins / strongDecided) * 100).toFixed(1) : "0.0";
+
+    const biasDecided = biasWins + biasLosses;
+    const biasWr = biasDecided > 0 ? ((biasWins / biasDecided) * 100).toFixed(1) : "0.0";
+
+    const totalDecided = totalWins + totalLosses;
+    const totalWr = totalDecided > 0 ? ((totalWins / totalDecided) * 100).toFixed(1) : "0.0";
+
+    const spanHours = (candles.length / 60).toFixed(1);
+
+    // Save into persistent cache for this asset
+    backtestCache.set(activeAsset, {
+      asset: activeAsset,
+      candlesCount: candles.length,
+      spanHours: spanHours,
+      strongCount: strongCount,
+      strongWins: strongWins,
+      strongLosses: strongLosses,
+      strongTies: strongTies,
+      strongWr: strongWr,
+      biasCount: biasCount,
+      biasWins: biasWins,
+      biasLosses: biasLosses,
+      biasTies: biasTies,
+      biasWr: biasWr,
+      totalCount: totalCount,
+      totalWins: totalWins,
+      totalLosses: totalLosses,
+      totalWr: totalWr,
+      maxStreak: maxStreak,
+      testedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    });
+
+    renderBacktestUI();
+  }
+
+  function renderBacktestUI() {
+    const btContainer = document.getElementById("qx-bt-content");
+    if (!btContainer) return;
+
+    if (!backtestCache.has(activeAsset)) {
+      btContainer.innerHTML = `
+        <div class="qx-bt-prompt">
+          No backtest run yet for <strong>${activeAsset}</strong>.
+          <br><span style="color: #64748b; font-size: 9.5px;">Click <strong>Run</strong> above to test historical candles.</span>
+        </div>
+      `;
+      return;
+    }
+
+    const b = backtestCache.get(activeAsset);
+
+    btContainer.innerHTML = `
+      <table class="qx-log-table" style="margin-top: 2px;">
+        <thead>
+          <tr>
+            <th>Tier</th>
+            <th>Setups</th>
+            <th>W - L (Tie)</th>
+            <th style="text-align: right;">Win Rate</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="qx-tier-badge qx-tier-strong">S</span> <strong>Strong</strong></td>
+            <td>${b.strongCount}</td>
+            <td>${b.strongWins}W - ${b.strongLosses}L ${b.strongTies > 0 ? `(${b.strongTies}T)` : ''}</td>
+            <td style="text-align: right; font-weight: 700; color: ${parseFloat(b.strongWr) >= 65 ? '#34d399' : '#f87171'};">${b.strongWr}%</td>
+          </tr>
+          <tr>
+            <td><span class="qx-tier-badge qx-tier-bias">B</span> <strong>Bias</strong></td>
+            <td>${b.biasCount}</td>
+            <td>${b.biasWins}W - ${b.biasLosses}L ${b.biasTies > 0 ? `(${b.biasTies}T)` : ''}</td>
+            <td style="text-align: right; font-weight: 700; color: ${parseFloat(b.biasWr) >= 60 ? '#34d399' : '#f87171'};">${b.biasWr}%</td>
+          </tr>
+          <tr style="border-top: 1px solid #2d3748; background: #131722;">
+            <td><strong>Total</strong></td>
+            <td><strong>${b.totalCount}</strong></td>
+            <td><strong>${b.totalWins}W - ${b.totalLosses}L</strong></td>
+            <td style="text-align: right; font-weight: 700; color: ${parseFloat(b.totalWr) >= 60 ? '#38bdf8' : '#e2e8f0'};">${b.totalWr}%</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="qx-bt-mini-footer">
+        <span>🔥 Max Streak: <strong>${b.maxStreak} Wins</strong></span>
+        <span style="color: #64748b;">${b.candlesCount} bars (~${b.spanHours}h) • ${b.testedAt}</span>
+      </div>
+    `;
+  }
+
+  // ==========================================
+  // RENDER FORWARD-TEST LOG UI
   // ==========================================
   function renderLogUI() {
     const bodyEl = document.getElementById("qx-log-body");
@@ -704,134 +879,6 @@
     bodyEl.innerHTML = rowsHtml;
   }
 
-  function renderBacktestUI() {
-    const btContainer = document.getElementById("qx-bt-content");
-    if (!btContainer) return;
-
-    const candles = state.candles1m;
-    if (!candles || candles.length < 25) {
-      btContainer.innerHTML = `
-        <div style="color: #fca5a5; font-size: 10.5px; text-align: center; padding: 12px 6px;">
-          ⚠️ Need >= 25 loaded 1m candles (currently ${candles ? candles.length : 0}).
-          <br>Click <strong>[Sync]</strong> above to ingest chart history.
-        </div>
-      `;
-      return;
-    }
-
-    let strongWins = 0, strongLosses = 0, strongTies = 0, strongCount = 0;
-    let biasWins = 0, biasLosses = 0, biasTies = 0, biasCount = 0;
-    let currentStreak = 0, maxStreak = 0;
-
-    for (let i = 20; i < candles.length - 1; i++) {
-      const subCandles = candles.slice(0, i + 1);
-      const m5 = getAggregate(subCandles, null, 5);
-      const m15 = getAggregate(subCandles, null, 15);
-      const rsi = calcRSI(subCandles, 14);
-      const sr = calcSR(subCandles);
-
-      let trend15m = "Neutral";
-      if (m15.length >= 1) {
-        const last15 = m15[m15.length - 1];
-        trend15m = last15.close >= last15.open ? "Bullish" : "Bearish";
-      }
-
-      let trend5m = "Neutral";
-      if (m5.length >= 2) {
-        const cur5 = m5[m5.length - 1];
-        const prev5 = m5[m5.length - 2];
-        trend5m = cur5.close >= prev5.close ? "Bullish" : "Bearish";
-      }
-
-      const price = subCandles[subCandles.length - 1].close;
-      const verdict = evaluateConfluence(trend15m, trend5m, rsi, price, sr);
-
-      if (verdict.dir !== "NONE") {
-        const targetCandle = candles[i + 1];
-        const entry = targetCandle.open;
-        const exit = targetCandle.close;
-
-        let outcome = "TIE";
-        if (verdict.dir === "CALL") {
-          outcome = exit > entry ? "WIN" : (exit < entry ? "LOSS" : "TIE");
-        } else if (verdict.dir === "PUT") {
-          outcome = exit < entry ? "WIN" : (exit > entry ? "LOSS" : "TIE");
-        }
-
-        if (verdict.tier === "STRONG") {
-          strongCount++;
-          if (outcome === "WIN") strongWins++;
-          else if (outcome === "LOSS") strongLosses++;
-          else strongTies++;
-        } else if (verdict.tier === "BIAS") {
-          biasCount++;
-          if (outcome === "WIN") biasWins++;
-          else if (outcome === "LOSS") biasLosses++;
-          else biasTies++;
-        }
-
-        if (outcome === "WIN") {
-          currentStreak++;
-          if (currentStreak > maxStreak) maxStreak = currentStreak;
-        } else if (outcome === "LOSS") {
-          currentStreak = 0;
-        }
-      }
-    }
-
-    const totalCount = strongCount + biasCount;
-    const totalWins = strongWins + biasWins;
-    const totalLosses = strongLosses + biasLosses;
-
-    const strongDecided = strongWins + strongLosses;
-    const strongWr = strongDecided > 0 ? ((strongWins / strongDecided) * 100).toFixed(1) : "0.0";
-
-    const biasDecided = biasWins + biasLosses;
-    const biasWr = biasDecided > 0 ? ((biasWins / biasDecided) * 100).toFixed(1) : "0.0";
-
-    const totalDecided = totalWins + totalLosses;
-    const totalWr = totalDecided > 0 ? ((totalWins / totalDecided) * 100).toFixed(1) : "0.0";
-
-    const spanHours = (candles.length / 60).toFixed(1);
-
-    btContainer.innerHTML = `
-      <table class="qx-log-table" style="margin-top: 2px;">
-        <thead>
-          <tr>
-            <th>Tier</th>
-            <th>Setups</th>
-            <th>W - L (Tie)</th>
-            <th style="text-align: right;">Win Rate</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td><span class="qx-tier-badge qx-tier-strong">S</span> <strong>Strong</strong></td>
-            <td>${strongCount}</td>
-            <td>${strongWins}W - ${strongLosses}L ${strongTies > 0 ? `(${strongTies}T)` : ''}</td>
-            <td style="text-align: right; font-weight: 700; color: ${parseFloat(strongWr) >= 65 ? '#34d399' : '#f87171'};">${strongWr}%</td>
-          </tr>
-          <tr>
-            <td><span class="qx-tier-badge qx-tier-bias">B</span> <strong>Bias</strong></td>
-            <td>${biasCount}</td>
-            <td>${biasWins}W - ${biasLosses}L ${biasTies > 0 ? `(${biasTies}T)` : ''}</td>
-            <td style="text-align: right; font-weight: 700; color: ${parseFloat(biasWr) >= 60 ? '#34d399' : '#f87171'};">${biasWr}%</td>
-          </tr>
-          <tr style="border-top: 1px solid #2d3748; background: #131722;">
-            <td><strong>Total</strong></td>
-            <td><strong>${totalCount}</strong></td>
-            <td><strong>${totalWins}W - ${totalLosses}L</strong></td>
-            <td style="text-align: right; font-weight: 700; color: ${parseFloat(totalWr) >= 60 ? '#38bdf8' : '#e2e8f0'};">${totalWr}%</td>
-          </tr>
-        </tbody>
-      </table>
-      <div class="qx-bt-mini-footer">
-        <span>🔥 Max Streak: <strong>${maxStreak} Wins</strong></span>
-        <span style="color: #64748b;">${candles.length} bars (~${spanHours}h)</span>
-      </div>
-    `;
-  }
-
   function mountUI() {
     if (document.getElementById("qx-assistant-panel")) return;
     if (!document.body) return;
@@ -844,7 +891,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.22</small>
+          <strong>QX Assistant</strong> <small>v1.4.23</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-sound-strong" class="qx-audio-btn" title="Toggle Strong Alerts (Triple Fanfare x3)">${strongSoundEnabled ? "S:🔊" : "S:🔇"}</button>
@@ -910,10 +957,10 @@
             </div>
             <div id="qx-forward-controls" class="qx-tab-actions">
               <span id="qx-log-summary" class="qx-log-pill">0W - 0L (0%)</span>
-              <button id="qx-btn-clear-log" class="qx-clear-btn" title="Reset Shared Session Log Across Windows">[Clr]</button>
+              <button id="qx-btn-clear-log" class="qx-clear-btn" title="Reset Shared Session Log Across Windows">Clr</button>
             </div>
             <div id="qx-backtest-controls" class="qx-tab-actions qx-hidden">
-              <button id="qx-btn-run-bt" class="qx-bt-run-btn" title="Re-run Backtest on Active Chart History">[Run]</button>
+              <button id="qx-btn-run-bt" class="qx-bt-run-btn" title="Run Backtest on Active Chart History">Run</button>
             </div>
           </div>
 
@@ -993,7 +1040,7 @@
       document.addEventListener("mouseup", onMouseUp);
     });
 
-    // Dual-Tab Switch Handlers
+    // Dual-Tab Switch Handlers (Visual Display Toggle Only)
     const tabForward = document.getElementById("qx-tab-btn-forward");
     const tabBacktest = document.getElementById("qx-tab-btn-backtest");
     const viewForward = document.getElementById("qx-view-forward");
@@ -1020,12 +1067,12 @@
       viewForward.classList.add("qx-hidden");
       controlsBacktest.classList.remove("qx-hidden");
       controlsForward.classList.add("qx-hidden");
-      renderBacktestUI();
+      renderBacktestUI(); // Displays cached result for activeAsset, never recalculating destructively
     });
 
     const btnRunBt = document.getElementById("qx-btn-run-bt");
     btnRunBt.addEventListener("click", () => {
-      renderBacktestUI();
+      runBacktestForActiveAsset();
     });
 
     const filterEl = document.getElementById("qx-log-pair-filter");
@@ -1071,7 +1118,6 @@
       setTimeout(() => {
         btnRefresh.textContent = "[Sync]";
         updateUI();
-        if (activeTab === "BACKTEST") renderBacktestUI();
       }, 300);
     });
 

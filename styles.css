@@ -265,19 +265,49 @@
   gap: 5px;
 }
 
+/* CLEAN SOLID ACTION BUTTONS (NO BRACKETS) */
 .qx-bt-run-btn {
-  background: #065f46;
+  background: #059669;
   border: 1px solid #10b981;
-  color: #6ee7b7;
-  font-size: 9.5px;
+  color: #ffffff;
+  font-size: 10px;
   font-weight: 700;
-  padding: 1px 6px;
+  padding: 2px 9px;
   border-radius: 4px;
   cursor: pointer;
+  line-height: 1.2;
+  transition: all 0.15s ease;
 }
 .qx-bt-run-btn:hover {
   background: #047857;
+  border-color: #34d399;
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.4);
+}
+
+.qx-clear-btn {
+  background: #334155;
+  border: 1px solid #475569;
+  color: #cbd5e1;
+  font-size: 9.5px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 4px;
+  cursor: pointer;
+  line-height: 1.2;
+  transition: all 0.15s ease;
+}
+.qx-clear-btn:hover {
+  background: #7f1d1d;
+  border-color: #ef4444;
   color: #ffffff;
+}
+
+.qx-bt-prompt {
+  text-align: center;
+  color: #94a3b8;
+  padding: 12px 6px;
+  font-size: 10px;
+  line-height: 1.5;
 }
 
 .qx-bt-mini-footer {
@@ -298,17 +328,7 @@
   color: #ffffff;
   background: #2d3748;
 }
-.qx-clear-btn {
-  background: transparent;
-  border: none;
-  color: #64748b;
-  cursor: pointer;
-  font-size: 10px;
-  padding: 0 2px;
-}
-.qx-clear-btn:hover {
-  color: #ef4444;
-}
+
 .qx-log-table-wrap {
   overflow-x: auto;
 }
