@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.4.36",
-  "description": "Read-only assistant with total trades count in Forward.test summary pill, atomic multi-window sync, and polished .xlsx dashboard export.",
+  "version": "1.4.37",
+  "description": "Read-only assistant with clean session bootstrap, total trades counter, and atomic multi-window sync.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",

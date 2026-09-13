@@ -1,7 +1,7 @@
 (function () {
   const VAULT_KEY = "__QX_ASSET_VAULT_V32__";
-  const LOG_KEY = "__QX_SHARED_LOG_V20__";
-  const PENDING_KEY = "__QX_SHARED_PENDING_V18__";
+  const LOG_KEY = "__QX_SHARED_LOG_V21__";
+  const PENDING_KEY = "__QX_SHARED_PENDING_V19__";
 
   const assetVault = new Map();
   const globalHistoryPool = [];
@@ -1643,7 +1643,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.36</small>
+          <strong>QX Assistant</strong> <small>v1.4.37</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-sound-strong" class="qx-audio-btn" title="Toggle Strong Alerts (Triple Fanfare x3)">${strongSoundEnabled ? "S:🔊" : "S:🔇"}</button>
