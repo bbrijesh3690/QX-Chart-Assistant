@@ -1,5 +1,5 @@
 (function () {
-  const VAULT_KEY = "__QX_ASSET_VAULT_V7__";
+  const VAULT_KEY = "__QX_ASSET_VAULT_V8__";
   const assetVault = new Map();
   const globalHistoryPool = [];
 
@@ -26,10 +26,9 @@
         livePrice: null,
         rawPrice: null,
         decimals: 3,
-        activeSignal: null,       // Signal currently active on the running candle
+        activeSignal: null,
         activeScore: 0,
-        activeFlipped: false,     // Sticky flip state across 0s-54s
-        activeFlipMsg: "",
+        activeFlipped: false,
         evalMinute: -1
       };
     }
@@ -43,7 +42,6 @@
         activeSignal: null,
         activeScore: 0,
         activeFlipped: false,
-        activeFlipMsg: "",
         evalMinute: -1
       });
     }
@@ -363,7 +361,7 @@
       <div id="qx-panel-header">
         <div id="qx-panel-title">
           <span class="qx-badge">READ ONLY</span>
-          <strong>QX Assistant</strong> <small>v1.4.9</small>
+          <strong>QX Assistant</strong> <small>v1.4.10</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-refresh" title="Synchronize Tabs & History">[Sync]</button>
@@ -383,22 +381,22 @@
           </div>
           <div class="qx-row" style="margin-top: 4px; border-top: 1px solid #232838; padding-top: 4px;">
             <span class="qx-label">1m Candle:</span>
-            <span id="qx-ui-timer" class="qx-timer-badge">--:-- [Analyzing]</span>
+            <span id="qx-ui-timer" class="qx-timer-badge">--:--</span>
           </div>
         </div>
 
         <div class="qx-section">
-          <div class="qx-section-title">CANDLE SIGNAL ENGINE</div>
+          <div class="qx-section-title">SIGNAL CONFLUENCE</div>
           <div class="qx-row">
             <span class="qx-label">Signal:</span>
             <strong id="qx-ui-setup" class="qx-accent">Analyzing...</strong>
           </div>
           <div class="qx-row">
-            <span class="qx-label">Confluence Score:</span>
+            <span class="qx-label">Score:</span>
             <span id="qx-ui-score" class="qx-pill">-- / 5</span>
           </div>
 
-          <!-- PERSISTENT FLIP & ADVISORY BANNER -->
+          <!-- DYNAMIC FLIP-ONLY ADVISORY BANNER -->
           <div id="qx-ui-advisory" class="qx-advisory-box qx-hidden"></div>
 
           <div class="qx-tf-box">
@@ -506,7 +504,7 @@
   }, 400);
 
   // ==========================================
-  // PERSISTENT SIGNAL & STICKY FLIP ENGINE
+  // CLEAN ANALYSIS & FLIP-ONLY WATCHDOG
   // ==========================================
   function updateAnalysis() {
     const dec = state.decimals !== undefined ? state.decimals : 3;
@@ -553,10 +551,10 @@
     const timerEl = document.getElementById("qx-ui-timer");
     if (timerEl) {
       if (sec < 55) {
-        timerEl.textContent = `00:${String(remSec).padStart(2, '0')}s [Active Candle]`;
+        timerEl.textContent = `00:${String(remSec).padStart(2, '0')}s`;
         timerEl.className = "qx-timer-badge qx-timer-analyzing";
       } else {
-        timerEl.textContent = `00:${String(remSec).padStart(2, '0')}s [LOCKING NEXT]`;
+        timerEl.textContent = `00:${String(remSec).padStart(2, '0')}s [LOCK]`;
         timerEl.className = "qx-timer-badge qx-timer-locked";
       }
     }
@@ -566,32 +564,29 @@
     const advisoryEl = document.getElementById("qx-ui-advisory");
 
     // ==============================================================
-    // WINDOW A: 55s - 59s (Lock Signal for Next Bar + Run Watchdog)
+    // 55s - 59s: LOCK SIGNAL FOR NEXT CANDLE + BACKGROUND WATCHDOG
     // ==============================================================
     if (sec >= 55) {
-      // First tick at :55s locks in the target for the upcoming candle
       if (state.evalMinute !== currentMinFloor) {
         state.activeSignal = Object.assign({}, liveVerdict);
         state.activeScore = liveVerdict.score;
         state.evalMinute = currentMinFloor;
         state.activeFlipped = false;
-        state.activeFlipMsg = "";
       }
 
-      // Background Watchdog: check for late flip before candle closes
+      // Check for late spike flip
       if (state.activeSignal && state.activeSignal.dir !== "NONE") {
         const flippedNow = (state.activeSignal.dir === "CALL" && liveVerdict.dir !== "CALL") ||
                            (state.activeSignal.dir === "PUT" && liveVerdict.dir !== "PUT") ||
                            (liveVerdict.score < 2);
         if (flippedNow) {
           state.activeFlipped = true;
-          state.activeFlipMsg = `⚠️ FLIP DETECTED: Setup turned ${liveVerdict.setup} in final 5s — DO NOT TRADE!`;
         }
       }
 
-      // Display Lock
+      // Clean Single-Line Locked Display
       if (signalEl && state.activeSignal) {
-        signalEl.textContent = `${state.activeSignal.setup} [LOCKED FOR :00s]`;
+        signalEl.textContent = `${state.activeSignal.setup} [LOCKED]`;
         signalEl.style.color = state.activeSignal.color;
       }
       if (scoreEl && state.activeSignal) {
@@ -601,62 +596,47 @@
           : "#2d3748";
         scoreEl.style.color = "#ffffff";
       }
-      if (advisoryEl) {
-        if (state.activeFlipped) {
-          advisoryEl.className = "qx-advisory-box qx-advisory-flip";
-          advisoryEl.textContent = state.activeFlipMsg;
-        } else if (state.activeSignal && state.activeSignal.dir !== "NONE") {
-          advisoryEl.className = "qx-advisory-box qx-advisory-ready";
-          advisoryEl.textContent = `✓ Signal Stable — Prepare ${state.activeSignal.dir} entry at :00s`;
-        } else {
-          advisoryEl.className = "qx-advisory-box qx-advisory-neutral";
-          advisoryEl.textContent = "No Trade Signal for upcoming candle.";
-        }
-      }
     }
 
     // ==============================================================
-    // WINDOW B: 00s - 54s (Active Candle Running: RETAIN & PERSIST)
+    // 00s - 54s: ACTIVE CANDLE RUNNING (CLEAN SINGLE LINE)
     // ==============================================================
     else {
-      const waitTime = 55 - sec;
-
       if (signalEl) {
-        if (state.activeSignal) {
-          signalEl.textContent = `${state.activeSignal.setup} [Active] (Analyzing next in ${waitTime}s)`;
+        if (state.activeSignal && state.activeSignal.dir !== "NONE") {
+          signalEl.textContent = `${state.activeSignal.setup} [Active]`;
           signalEl.style.color = state.activeSignal.color;
         } else {
-          signalEl.textContent = `Analyzing (Locks in ${waitTime}s)`;
+          signalEl.textContent = `Analyzing...`;
           signalEl.style.color = "#94a3b8";
         }
       }
 
       if (scoreEl) {
-        if (state.activeSignal) {
-          scoreEl.textContent = `${state.activeScore} / 5 (Active)`;
+        if (state.activeSignal && state.activeSignal.dir !== "NONE") {
+          scoreEl.textContent = `${state.activeScore} / 5`;
           scoreEl.style.background = state.activeScore >= 3 
             ? (state.activeSignal.dir === "CALL" ? "#065f46" : "#7f1d1d") 
             : "#2d3748";
           scoreEl.style.color = "#ffffff";
         } else {
-          scoreEl.textContent = `${liveVerdict.score} / 5 (Forming)`;
+          scoreEl.textContent = `${liveVerdict.score} / 5`;
           scoreEl.style.background = "#2d3748";
           scoreEl.style.color = "#cbd5e1";
         }
       }
+    }
 
-      // PERSISTENT FLIP BANNER: Remains visible through 54s so trader stays disciplined!
-      if (advisoryEl) {
-        if (state.activeFlipped) {
-          advisoryEl.className = "qx-advisory-box qx-advisory-flip";
-          advisoryEl.textContent = `⚠️ FLIPPED IN PREV 5s: Trade was skipped. Awaiting new signal (${waitTime}s)`;
-        } else if (state.activeSignal && state.activeSignal.dir !== "NONE") {
-          advisoryEl.className = "qx-advisory-box qx-advisory-ready";
-          advisoryEl.textContent = `✓ Active Trade Running — Analyzing next candle in ${waitTime}s`;
-        } else {
-          advisoryEl.className = "qx-advisory-box qx-hidden";
-          advisoryEl.textContent = "";
-        }
+    // ==============================================================
+    // ADVISORY: ONLY RENDERS ON FLIP (HIDDEN OTHERWISE)
+    // ==============================================================
+    if (advisoryEl) {
+      if (state.activeFlipped) {
+        advisoryEl.className = "qx-advisory-box qx-advisory-flip";
+        advisoryEl.textContent = "⚠️ FLIP DETECTED: Signal shifted in final 5s — DO NOT TRADE!";
+      } else {
+        advisoryEl.className = "qx-advisory-box qx-hidden";
+        advisoryEl.textContent = "";
       }
     }
 

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.4.9",
-  "description": "Read-only assistant with persistent signal tracking, full-candle flip protection, and MTF engine.",
+  "version": "1.4.10",
+  "description": "Read-only assistant with auto-sizing dynamic panel, clean single-line signals, and flip-only watchdog.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",
