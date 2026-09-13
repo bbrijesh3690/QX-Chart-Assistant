@@ -219,3 +219,81 @@
   color: #e2e8f0;
   margin-top: 2px;
 }
+
+/* FORWARD-TEST LOG DRAWER */
+.qx-log-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.qx-log-pill {
+  font-size: 9.5px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 8px;
+  color: #ffffff;
+  background: #2d3748;
+}
+.qx-clear-btn {
+  background: transparent;
+  border: none;
+  color: #64748b;
+  cursor: pointer;
+  font-size: 10px;
+  padding: 0 2px;
+}
+.qx-clear-btn:hover {
+  color: #ef4444;
+}
+.qx-log-table-wrap {
+  overflow-x: auto;
+}
+.qx-log-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 10px;
+  font-family: monospace;
+}
+.qx-log-table th {
+  color: #64748b;
+  text-align: left;
+  padding: 2px 3px;
+  border-bottom: 1px solid #232838;
+}
+.qx-log-table td {
+  padding: 3px 3px;
+  color: #cbd5e1;
+  border-bottom: 1px solid #1c212e;
+}
+.qx-empty-log {
+  text-align: center;
+  color: #64748b;
+  padding: 8px 0 !important;
+  font-family: sans-serif;
+  font-size: 10.5px;
+}
+.qx-badge-win {
+  background: #065f46;
+  color: #6ee7b7;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-weight: 700;
+  font-size: 9px;
+}
+.qx-badge-loss {
+  background: #7f1d1d;
+  color: #fca5a5;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-weight: 700;
+  font-size: 9px;
+}
+.qx-badge-tie {
+  background: #334155;
+  color: #cbd5e1;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-weight: 700;
+  font-size: 9px;
+}

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.4.15",
-  "description": "Read-only assistant with 3x Triple Fanfare for Strong signals and 3x Arcade Ping for Bias signals.",
+  "version": "1.4.16",
+  "description": "Read-only assistant with automated live forward-test trade logging, settlement engine, and win-rate analytics.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",

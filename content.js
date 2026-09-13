@@ -1,10 +1,59 @@
 (function () {
-  const VAULT_KEY = "__QX_ASSET_VAULT_V13__";
+  const VAULT_KEY = "__QX_ASSET_VAULT_V14__";
+  const LOG_KEY = "__QX_FORWARD_LOG_V2__";
   const assetVault = new Map();
   const globalHistoryPool = [];
 
   // ==========================================
-  // LOUD WEB AUDIO ENGINE (3X REPEAT ALERTS)
+  // FORWARD-TEST TRADE LOG & TRACKER STATE
+  // ==========================================
+  let tradeLog = [];
+  let activePendingTrade = null;
+
+  function loadLog() {
+    try {
+      const raw = sessionStorage.getItem(LOG_KEY);
+      if (raw) tradeLog = JSON.parse(raw);
+    } catch (_) {}
+  }
+
+  function saveLog() {
+    try {
+      sessionStorage.setItem(LOG_KEY, JSON.stringify(tradeLog));
+    } catch (_) {}
+  }
+
+  loadLog();
+
+  function settleTrade(trade, exitPrice) {
+    let outcome = "TIE";
+    if (trade.dir === "CALL") {
+      outcome = exitPrice > trade.entryPrice ? "WIN" : (exitPrice < trade.entryPrice ? "LOSS" : "TIE");
+    } else if (trade.dir === "PUT") {
+      outcome = exitPrice < trade.entryPrice ? "WIN" : (exitPrice > trade.entryPrice ? "LOSS" : "TIE");
+    }
+
+    const d = new Date(trade.minTime);
+    const timeStr = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+
+    tradeLog.unshift({
+      time: timeStr,
+      asset: trade.asset,
+      setup: trade.setup,
+      dir: trade.dir,
+      entry: trade.entryPrice,
+      exit: exitPrice,
+      decimals: trade.decimals,
+      outcome: outcome
+    });
+
+    if (tradeLog.length > 25) tradeLog.pop();
+    saveLog();
+    renderLogUI();
+  }
+
+  // ==========================================
+  // LOUD WEB AUDIO ENGINE (3X REPEATS)
   // ==========================================
   let audioCtx = null;
   let masterComp = null;
@@ -54,7 +103,6 @@
     osc.stop(startTime + duration);
   }
 
-  // Strong: Triple Fanfare played 3 times
   function playStrongFanfare3x(dir) {
     const ctx = getAudioContext();
     if (!ctx) return;
@@ -75,7 +123,6 @@
     }
   }
 
-  // Bias: Arcade Ping played 3 times
   function playBiasArcade3x(dir) {
     const ctx = getAudioContext();
     if (!ctx) return;
@@ -96,11 +143,8 @@
 
   function playAlert(tier, dir) {
     try {
-      if (tier === "STRONG") {
-        playStrongFanfare3x(dir);
-      } else if (tier === "BIAS") {
-        playBiasArcade3x(dir);
-      }
+      if (tier === "STRONG") playStrongFanfare3x(dir);
+      else if (tier === "BIAS") playBiasArcade3x(dir);
     } catch (_) {}
   }
 
@@ -296,9 +340,9 @@
     }
   }, 350);
 
-  // ==========================================
-  // CANDLE INGESTION
-  // ==========================================
+  // ==============================================================
+  // CANDLE INGESTION & FORWARD-TEST SETTLEMENT LIFECYCLE
+  // ==============================================================
   function ingestFastTick(price, rawText, decimals, time) {
     if (activeAsset === "Detecting...") {
       const found = getActiveTabFromDOM();
@@ -331,8 +375,29 @@
       state.currentCandle.low = Math.min(state.currentCandle.low, price);
       state.currentCandle.close = price;
     } else if (minFloor > state.currentCandle.time) {
-      state.candles1m.push(Object.assign({}, state.currentCandle));
+      const finishedCandle = Object.assign({}, state.currentCandle);
+      state.candles1m.push(finishedCandle);
       if (state.candles1m.length > 240) state.candles1m.shift();
+
+      // 1. SETTLE PENDING FORWARD-TEST TRADE (IF RUNNING ON JUST-CLOSED CANDLE)
+      if (activePendingTrade && activePendingTrade.minTime === finishedCandle.time) {
+        settleTrade(activePendingTrade, finishedCandle.close);
+        activePendingTrade = null;
+      }
+
+      // 2. INITIATE NEW FORWARD-TEST TRADE FOR THE OPENING CANDLE
+      if (state.activeSignal && state.activeSignal.dir !== "NONE" && !state.activeFlipped && state.evalMinute === finishedCandle.time) {
+        activePendingTrade = {
+          minTime: minFloor,
+          asset: activeAsset,
+          dir: state.activeSignal.dir,
+          tier: state.activeSignal.tier,
+          setup: state.activeSignal.setup,
+          entryPrice: price,
+          decimals: state.decimals !== undefined ? state.decimals : 3
+        };
+      }
+
       state.currentCandle = { time: minFloor, open: price, high: price, low: price, close: price };
       saveVault();
     }
@@ -452,6 +517,54 @@
     }
   }
 
+  function renderLogUI() {
+    const bodyEl = document.getElementById("qx-log-body");
+    const summaryEl = document.getElementById("qx-log-summary");
+    if (!bodyEl || !summaryEl) return;
+
+    if (tradeLog.length === 0) {
+      bodyEl.innerHTML = `<tr><td colspan="5" class="qx-empty-log">Awaiting first settled candle...</td></tr>`;
+      summaryEl.textContent = `0W - 0L (0%)`;
+      summaryEl.style.background = "#2d3748";
+      return;
+    }
+
+    let wins = 0;
+    let losses = 0;
+    let ties = 0;
+
+    tradeLog.forEach(t => {
+      if (t.outcome === "WIN") wins++;
+      else if (t.outcome === "LOSS") losses++;
+      else ties++;
+    });
+
+    const totalDecided = wins + losses;
+    const wr = totalDecided > 0 ? ((wins / totalDecided) * 100).toFixed(0) : 0;
+
+    summaryEl.textContent = `${wins}W - ${losses}L (${wr}%)`;
+    summaryEl.style.background = wr >= 65 ? "#065f46" : (wr >= 50 ? "#2d3748" : "#7f1d1d");
+
+    let rowsHtml = "";
+    tradeLog.slice(0, 5).forEach(t => {
+      const outcomeBadge = t.outcome === "WIN" 
+        ? `<span class="qx-badge-win">WIN</span>` 
+        : (t.outcome === "LOSS" ? `<span class="qx-badge-loss">LOSS</span>` : `<span class="qx-badge-tie">TIE</span>`);
+
+      const dec = t.decimals !== undefined ? t.decimals : 3;
+      rowsHtml += `
+        <tr>
+          <td>${t.time}</td>
+          <td style="color: ${t.dir === 'CALL' ? '#10b981' : '#ef4444'}; font-weight: 600;">${t.dir}</td>
+          <td>${t.entry.toFixed(dec)}</td>
+          <td>${t.exit.toFixed(dec)}</td>
+          <td style="text-align: right;">${outcomeBadge}</td>
+        </tr>
+      `;
+    });
+    bodyEl.innerHTML = rowsHtml;
+  }
+
   function mountUI() {
     if (document.getElementById("qx-assistant-panel")) return;
     if (!document.body) return;
@@ -465,7 +578,7 @@
       <div id="qx-panel-header">
         <div id="qx-panel-title">
           <span class="qx-badge">READ ONLY</span>
-          <strong>QX Assistant</strong> <small>v1.4.15</small>
+          <strong>QX Assistant</strong> <small>v1.4.16</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-sound-strong" class="qx-audio-btn" title="Toggle Strong Alerts (Triple Fanfare x3)">${strongSoundEnabled ? "S:🔊" : "S:🔇"}</button>
@@ -521,6 +634,34 @@
             <div class="qx-stat-box"><div class="qx-stat-lbl">15m</div><div id="qx-cnt-15m" class="qx-stat-val">0</div></div>
           </div>
         </div>
+
+        <!-- FORWARD-TEST LOG DRAWER -->
+        <div class="qx-section" id="qx-log-section">
+          <div class="qx-log-header">
+            <span class="qx-section-title" style="margin-bottom: 0;">FORWARD-TEST LOG</span>
+            <div style="display: flex; align-items: center; gap: 5px;">
+              <span id="qx-log-summary" class="qx-log-pill">0W - 0L (0%)</span>
+              <button id="qx-btn-clear-log" class="qx-clear-btn" title="Reset Session Log">[Clr]</button>
+            </div>
+          </div>
+          <div class="qx-log-table-wrap">
+            <table class="qx-log-table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Dir</th>
+                  <th>Entry</th>
+                  <th>Exit</th>
+                  <th style="text-align: right;">Result</th>
+                </tr>
+              </thead>
+              <tbody id="qx-log-body">
+                <tr><td colspan="5" class="qx-empty-log">Awaiting first settled candle...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
       </div>
     `;
     document.body.appendChild(panel);
@@ -568,14 +709,13 @@
       document.addEventListener("mouseup", onMouseUp);
     });
 
-    // Audio Toggle Handlers
     const btnSoundStrong = document.getElementById("qx-btn-sound-strong");
     btnSoundStrong.addEventListener("click", () => {
       const cur = localStorage.getItem("__qx_sound_strong__") !== "false";
       const next = !cur;
       localStorage.setItem("__qx_sound_strong__", next ? "true" : "false");
       btnSoundStrong.textContent = next ? "S:🔊" : "S:🔇";
-      if (next) playAlert("STRONG", "CALL"); // Preview Triple Fanfare 3x
+      if (next) playAlert("STRONG", "CALL");
     });
 
     const btnSoundBias = document.getElementById("qx-btn-sound-bias");
@@ -584,7 +724,14 @@
       const next = !cur;
       localStorage.setItem("__qx_sound_bias__", next ? "true" : "false");
       btnSoundBias.textContent = next ? "B:🔊" : "B:🔇";
-      if (next) playAlert("BIAS", "CALL"); // Preview Arcade Ping 3x
+      if (next) playAlert("BIAS", "CALL");
+    });
+
+    const btnClearLog = document.getElementById("qx-btn-clear-log");
+    btnClearLog.addEventListener("click", () => {
+      tradeLog = [];
+      saveLog();
+      renderLogUI();
     });
 
     const btnRefresh = document.getElementById("qx-btn-refresh");
@@ -616,6 +763,7 @@
       localStorage.removeItem("__qx_panel_pos__");
     });
 
+    renderLogUI();
     updateUI();
   }
 
@@ -629,7 +777,7 @@
   }, 400);
 
   // ==============================================================
-  // ANALYSIS & FLIP GATE & 3X LOUD REPEAT ALERTS
+  // ANALYSIS & FLIP GATE & SIGNAL LOCK
   // ==============================================================
   function updateAnalysis() {
     const dec = state.decimals !== undefined ? state.decimals : 3;
@@ -699,7 +847,6 @@
         state.evalMinute = currentMinFloor;
         state.activeFlipped = false;
 
-        // Trigger 3x repeat chimes based on tier
         const strongSoundEnabled = localStorage.getItem("__qx_sound_strong__") !== "false";
         const biasSoundEnabled = localStorage.getItem("__qx_sound_bias__") !== "false";
 
