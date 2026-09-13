@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.4.19",
-  "description": "Read-only assistant with Strong [S] and Bias [B] tier badges in the forward-test log.",
+  "version": "1.4.20",
+  "description": "Read-only assistant with multi-window BroadcastChannel synchronization, shared 4-chart forward-test log, and visual chime pulse.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",

@@ -15,7 +15,21 @@
   z-index: 999999999;
   user-select: none;
   box-sizing: border-box;
+  transition: border-color 0.25s ease, box-shadow 0.25s ease;
 }
+
+/* VISUAL CHIME PULSE FOR TILED MULTI-WINDOW SETUPS */
+.qx-window-pulse {
+  border-color: #38bdf8 !important;
+  box-shadow: 0 0 20px #0284c7, 0 10px 30px rgba(0, 0, 0, 0.7) !important;
+  animation: qx-window-glow 0.8s infinite alternate !important;
+}
+
+@keyframes qx-window-glow {
+  from { border-color: #0284c7; box-shadow: 0 0 10px #0284c7; }
+  to { border-color: #38bdf8; box-shadow: 0 0 25px #38bdf8; }
+}
+
 #qx-panel-header {
   display: flex;
   justify-content: space-between;
@@ -220,7 +234,7 @@
   margin-top: 2px;
 }
 
-/* FORWARD-TEST LOG DRAWER */
+/* SHARED FORWARD-TEST LOG DRAWER */
 .qx-log-header {
   display: flex;
   justify-content: space-between;

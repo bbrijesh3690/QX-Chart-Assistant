@@ -1,10 +1,15 @@
 (function () {
-  const VAULT_KEY = "__QX_ASSET_VAULT_V17__";
-  const LOG_KEY = "__QX_FORWARD_LOG_V5__";
-  const PENDING_KEY = "__QX_PENDING_TRADES_V3__";
+  const VAULT_KEY = "__QX_ASSET_VAULT_V18__";
+  const LOG_KEY = "__QX_SHARED_LOG_V6__";
+  const PENDING_KEY = "__QX_SHARED_PENDING_V4__";
 
   const assetVault = new Map();
   const globalHistoryPool = [];
+
+  // ==========================================
+  // CROSS-WINDOW BROADCAST CHANNEL ENGINE
+  // ==========================================
+  const syncChannel = ("BroadcastChannel" in window) ? new BroadcastChannel("QX_CROSS_WINDOW_SYNC") : null;
 
   let tradeLog = [];
   let pendingTrades = [];
@@ -12,23 +17,56 @@
 
   function loadLog() {
     try {
-      const raw = sessionStorage.getItem(LOG_KEY);
-      if (raw) tradeLog = JSON.parse(raw);
-      const rawPending = sessionStorage.getItem(PENDING_KEY);
-      if (rawPending) pendingTrades = JSON.parse(rawPending);
-    } catch (_) {}
+      const raw = localStorage.getItem(LOG_KEY);
+      tradeLog = raw ? JSON.parse(raw) : [];
+      const rawPending = localStorage.getItem(PENDING_KEY);
+      pendingTrades = rawPending ? JSON.parse(rawPending) : [];
+    } catch (_) {
+      tradeLog = [];
+      pendingTrades = [];
+    }
   }
 
-  function saveLog() {
+  function saveLog(broadcast = true) {
     try {
-      sessionStorage.setItem(LOG_KEY, JSON.stringify(tradeLog));
-      sessionStorage.setItem(PENDING_KEY, JSON.stringify(pendingTrades));
+      localStorage.setItem(LOG_KEY, JSON.stringify(tradeLog));
+      localStorage.setItem(PENDING_KEY, JSON.stringify(pendingTrades));
+      if (broadcast && syncChannel) {
+        syncChannel.postMessage({ type: "QX_SYNC_LOG_UPDATE" });
+      }
     } catch (_) {}
   }
 
   loadLog();
 
+  if (syncChannel) {
+    syncChannel.onmessage = (e) => {
+      if (e.data?.type === "QX_SYNC_LOG_UPDATE") {
+        loadLog();
+        renderLogUI();
+      }
+    };
+  }
+
+  window.addEventListener("storage", (e) => {
+    if (e.key === LOG_KEY || e.key === PENDING_KEY) {
+      loadLog();
+      renderLogUI();
+    }
+  });
+
+  // Background fallback sync every 1 second
+  setInterval(() => {
+    loadLog();
+    renderLogUI();
+  }, 1000);
+
   function settleTrade(trade, exitPrice) {
+    const tradeId = `${trade.asset}_${trade.minTime}`;
+    loadLog();
+
+    if (tradeLog.some(t => t.id === tradeId)) return;
+
     let outcome = "TIE";
     if (trade.dir === "CALL") {
       outcome = exitPrice > trade.entryPrice ? "WIN" : (exitPrice < trade.entryPrice ? "LOSS" : "TIE");
@@ -40,6 +78,7 @@
     const timeStr = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 
     tradeLog.unshift({
+      id: tradeId,
       time: timeStr,
       asset: trade.asset,
       setup: trade.setup,
@@ -52,13 +91,15 @@
       outcome: outcome
     });
 
-    if (tradeLog.length > 35) tradeLog.pop();
-    saveLog();
+    if (tradeLog.length > 40) tradeLog.pop();
+    saveLog(true);
     renderLogUI();
   }
 
   function reconcilePendingTrades(assetName, candles, currentCandleTime) {
-    if (!candles || candles.length === 0 || pendingTrades.length === 0) return;
+    if (!candles || candles.length === 0) return;
+    loadLog();
+    if (pendingTrades.length === 0) return;
 
     const remaining = [];
     let updated = false;
@@ -84,7 +125,7 @@
 
     if (updated) {
       pendingTrades = remaining;
-      saveLog();
+      saveLog(true);
     }
   }
 
@@ -139,9 +180,20 @@
     osc.stop(startTime + duration);
   }
 
+  function triggerWindowVisualPulse() {
+    const panel = document.getElementById("qx-assistant-panel");
+    if (!panel) return;
+    panel.classList.remove("qx-window-pulse");
+    void panel.offsetWidth;
+    panel.classList.add("qx-window-pulse");
+    setTimeout(() => panel.classList.remove("qx-window-pulse"), 2500);
+  }
+
   function playStrongFanfare3x(dir) {
     const ctx = getAudioContext();
     if (!ctx) return;
+    triggerWindowVisualPulse();
+
     const baseTime = ctx.currentTime;
     const vol = 0.85;
 
@@ -162,6 +214,8 @@
   function playBiasArcade3x(dir) {
     const ctx = getAudioContext();
     if (!ctx) return;
+    triggerWindowVisualPulse();
+
     const baseTime = ctx.currentTime;
     const vol = 0.70;
 
@@ -419,10 +473,14 @@
 
       reconcilePendingTrades(activeAsset, state.candles1m, minFloor);
 
+      // Register new trade ticket for opening candle
       if (state.activeSignal && state.activeSignal.dir !== "NONE" && !state.activeFlipped && state.evalMinute === finishedCandle.time) {
-        const alreadyPending = pendingTrades.some(t => t.asset === activeAsset && t.minTime === minFloor);
-        if (!alreadyPending) {
+        const tradeId = `${activeAsset}_${minFloor}`;
+        loadLog();
+
+        if (!pendingTrades.some(t => t.id === tradeId) && !tradeLog.some(t => t.id === tradeId)) {
           pendingTrades.push({
+            id: tradeId,
             minTime: minFloor,
             asset: activeAsset,
             dir: state.activeSignal.dir,
@@ -432,7 +490,7 @@
             entryPrice: price,
             decimals: state.decimals !== undefined ? state.decimals : 3
           });
-          saveLog();
+          saveLog(true);
         }
       }
 
@@ -558,7 +616,7 @@
   }
 
   // ==========================================
-  // RENDER LOG UI WITH S/B TIER BADGES
+  // RENDER LOG UI
   // ==========================================
   function renderLogUI() {
     const bodyEl = document.getElementById("qx-log-body");
@@ -615,7 +673,6 @@
       const dec = t.decimals !== undefined ? t.decimals : 3;
       const shortAsset = t.asset.replace(/\s*\(OTC\)/gi, " *").slice(0, 9);
 
-      // Strong vs Bias Badge
       const isStrong = t.tier === "STRONG" || (t.setup && t.setup.includes("STRONG"));
       const tierBadge = isStrong 
         ? `<span class="qx-tier-badge qx-tier-strong" title="Strong Signal (Score >= 4)">S</span>` 
@@ -655,7 +712,7 @@
       <div id="qx-panel-header">
         <div id="qx-panel-title">
           <span class="qx-badge">READ ONLY</span>
-          <strong>QX Assistant</strong> <small>v1.4.19</small>
+          <strong>QX Assistant</strong> <small>v1.4.20</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-sound-strong" class="qx-audio-btn" title="Toggle Strong Alerts (Triple Fanfare x3)">${strongSoundEnabled ? "S:🔊" : "S:🔇"}</button>
@@ -712,13 +769,13 @@
           </div>
         </div>
 
-        <!-- FORWARD-TEST LOG DRAWER WITH IN-COLUMN PAIR FILTER & TIER BADGES -->
+        <!-- SHARED CROSS-WINDOW FORWARD-TEST LOG DRAWER -->
         <div class="qx-section" id="qx-log-section">
           <div class="qx-log-header">
             <span class="qx-section-title" style="margin-bottom: 0;">FORWARD-TEST LOG</span>
             <div style="display: flex; align-items: center; gap: 5px;">
               <span id="qx-log-summary" class="qx-log-pill">0W - 0L (0%)</span>
-              <button id="qx-btn-clear-log" class="qx-clear-btn" title="Reset Session Log">[Clr]</button>
+              <button id="qx-btn-clear-log" class="qx-clear-btn" title="Reset Shared Session Log Across All Windows">[Clr]</button>
             </div>
           </div>
           <div class="qx-log-table-wrap">
@@ -820,7 +877,7 @@
       tradeLog = [];
       pendingTrades = [];
       currentLogFilter = "ALL";
-      saveLog();
+      saveLog(true);
       renderLogUI();
     });
 
@@ -928,7 +985,7 @@
     const advisoryEl = document.getElementById("qx-ui-advisory");
 
     // ==============================================================
-    // WINDOW A: 55,000ms - 59,999ms (Lock at 55s + 3x Chimes + Flip Gate)
+    // WINDOW A: 55,000ms - 59,999ms (Lock at 55s + Chimes + Flip Gate)
     // ==============================================================
     if (msInMinute >= 55000) {
       if (state.evalMinute !== currentMinFloor) {
