@@ -1,11 +1,5 @@
 (function () {
-  try {
-    sessionStorage.removeItem("__QX_SESSION_CACHE__");
-    sessionStorage.removeItem("__QX_ASSET_VAULT__");
-    sessionStorage.removeItem("__QX_ASSET_VAULT_V3__");
-  } catch (_) {}
-
-  const VAULT_KEY = "__QX_ASSET_VAULT_V5__";
+  const VAULT_KEY = "__QX_ASSET_VAULT_V6__";
   const assetVault = new Map();
   const globalHistoryPool = [];
 
@@ -26,7 +20,17 @@
 
   function getVaultEntry(name) {
     if (!name || name === "Detecting...") {
-      return { candles1m: [], currentCandle: null, livePrice: null, rawPrice: null, decimals: 3 };
+      return {
+        candles1m: [],
+        currentCandle: null,
+        livePrice: null,
+        rawPrice: null,
+        decimals: 3,
+        lockedVerdict: null,
+        lockedMinute: -1,
+        hasFlipped: false,
+        flipMessage: ""
+      };
     }
     if (!assetVault.has(name)) {
       assetVault.set(name, {
@@ -34,13 +38,16 @@
         currentCandle: null,
         livePrice: null,
         rawPrice: null,
-        decimals: 3
+        decimals: 3,
+        lockedVerdict: null,
+        lockedMinute: -1,
+        hasFlipped: false,
+        flipMessage: ""
       });
     }
     return assetVault.get(name);
   }
 
-  // PRESERVES EXACT PAIR FORMAT (Leaves non-OTC pairs clean!)
   function formatCleanName(raw) {
     if (!raw || typeof raw !== "string") return null;
 
@@ -58,14 +65,12 @@
     if (!s || s.length < 2 || s.includes("%") || /^\d+$/.test(s)) return null;
     if (/^(close|tab|payout|pin|active|favorite)$/i.test(s)) return null;
 
-    // Currency Pairs: only add (OTC) if the raw string actually contained OTC!
     const pairMatch = s.match(/([A-Z]{3}\/[A-Z]{3})/i);
     if (pairMatch) {
       const isOtc = /OTC/i.test(s);
       return isOtc ? `${pairMatch[1].toUpperCase()} (OTC)` : pairMatch[1].toUpperCase();
     }
 
-    // Indices, Crypto & Commodities (e.g. FTSE 100, Bitcoin Cash (OTC), Gold)
     const generalMatch = s.match(/([A-Za-z0-9\.\-\s]+(?:\(OTC\))?)/i);
     if (generalMatch && generalMatch[1].trim().length >= 3) {
       return generalMatch[1].trim();
@@ -73,7 +78,6 @@
     return null;
   }
 
-  // ACTIVE-STATE TAB DETECTOR
   function getActiveTabFromDOM() {
     const candidateTabs = Array.from(document.querySelectorAll("*")).filter(el => {
       if (el.closest("#qx-assistant-panel")) return false;
@@ -229,6 +233,12 @@
       state.candles1m.push(Object.assign({}, state.currentCandle));
       if (state.candles1m.length > 240) state.candles1m.shift();
       state.currentCandle = { time: minFloor, open: price, high: price, low: price, close: price };
+      
+      // Minute rollover: reset lock and watchdog
+      state.lockedVerdict = null;
+      state.lockedMinute = -1;
+      state.hasFlipped = false;
+      state.flipMessage = "";
       saveVault();
     }
 
@@ -307,51 +317,43 @@
     };
   }
 
-  // ==========================================
-  // DYNAMIC CONFLUENCE & SETUP ENGINE
-  // ==========================================
-  function evaluateConfluence(m15Trend, m5Trend, rsi, price, sr, latestCandle) {
+  function evaluateConfluence(m15Trend, m5Trend, rsi, price, sr) {
     let callScore = 0;
     let putScore = 0;
 
-    // 1. 15m Higher-Timeframe Trend
     if (m15Trend === "Bullish") callScore += 1.5;
     else if (m15Trend === "Bearish") putScore += 1.5;
 
-    // 2. 5m Intermediate Trend
     if (m5Trend === "Bullish") callScore += 1.0;
     else if (m5Trend === "Bearish") putScore += 1.0;
 
-    // 3. 1m RSI Conditions
     if (rsi !== null) {
-      if (rsi <= 32) callScore += 1.5; // Oversold -> Buy bounce
-      else if (rsi >= 68) putScore += 1.5; // Overbought -> Sell drop
+      if (rsi <= 32) callScore += 1.5;
+      else if (rsi >= 68) putScore += 1.5;
       else if (rsi > 50 && m5Trend === "Bullish") callScore += 0.5;
       else if (rsi < 50 && m5Trend === "Bearish") putScore += 0.5;
     }
 
-    // 4. Support / Resistance Proximity
     if (sr.s !== null && sr.r !== null && price !== null) {
       const range = sr.r - sr.s;
       if (range > 0) {
         const distToSupport = (price - sr.s) / range;
         const distToResistance = (sr.r - price) / range;
-        if (distToSupport < 0.15) callScore += 1.0; // Near Support
-        if (distToResistance < 0.15) putScore += 1.0; // Near Resistance
+        if (distToSupport < 0.15) callScore += 1.0;
+        if (distToResistance < 0.15) putScore += 1.0;
       }
     }
 
-    // Calculate final verdict
     if (callScore >= 3.5 && callScore > putScore) {
-      return { setup: "STRONG CALL", score: Math.min(5, Math.round(callScore)), color: "#10b981" };
+      return { setup: "STRONG BUY", score: Math.min(5, Math.round(callScore)), color: "#10b981", dir: "CALL" };
     } else if (putScore >= 3.5 && putScore > callScore) {
-      return { setup: "STRONG PUT", score: Math.min(5, Math.round(putScore)), color: "#ef4444" };
+      return { setup: "STRONG PUT", score: Math.min(5, Math.round(putScore)), color: "#ef4444", dir: "PUT" };
     } else if (callScore >= 2.5 && callScore > putScore) {
-      return { setup: "CALL Bias", score: Math.round(callScore), color: "#34d399" };
+      return { setup: "CALL Bias", score: Math.round(callScore), color: "#34d399", dir: "CALL" };
     } else if (putScore >= 2.5 && putScore > callScore) {
-      return { setup: "PUT Bias", score: Math.round(putScore), color: "#f87171" };
+      return { setup: "PUT Bias", score: Math.round(putScore), color: "#f87171", dir: "PUT" };
     } else {
-      return { setup: "Neutral", score: Math.max(callScore, putScore).toFixed(0), color: "#94a3b8" };
+      return { setup: "Neutral", score: Math.max(callScore, putScore).toFixed(0), color: "#94a3b8", dir: "NONE" };
     }
   }
 
@@ -365,7 +367,7 @@
       <div id="qx-panel-header">
         <div id="qx-panel-title">
           <span class="qx-badge">READ ONLY</span>
-          <strong>QX Assistant</strong> <small>v1.4.7</small>
+          <strong>QX Assistant</strong> <small>v1.4.8</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-refresh" title="Synchronize Tabs & History">[Sync]</button>
@@ -383,18 +385,26 @@
             <span class="qx-label">Price:</span>
             <span id="qx-ui-price" class="qx-price">Waiting...</span>
           </div>
+          <div class="qx-row" style="margin-top: 4px; border-top: 1px solid #232838; padding-top: 4px;">
+            <span class="qx-label">1m Candle:</span>
+            <span id="qx-ui-timer" class="qx-timer-badge">--:-- [Analyzing]</span>
+          </div>
         </div>
 
         <div class="qx-section">
-          <div class="qx-section-title">MULTI-TIMEFRAME ANALYSIS</div>
+          <div class="qx-section-title">NEXT CANDLE SIGNAL (:55s LOCK)</div>
           <div class="qx-row">
             <span class="qx-label">Setup:</span>
-            <strong id="qx-ui-setup" class="qx-accent">Scanning...</strong>
+            <strong id="qx-ui-setup" class="qx-accent">Analyzing...</strong>
           </div>
           <div class="qx-row">
             <span class="qx-label">Confluence Score:</span>
-            <span id="qx-ui-score" class="qx-pill">0 / 5</span>
+            <span id="qx-ui-score" class="qx-pill">-- / 5</span>
           </div>
+
+          <!-- DYNAMIC FLIP ADVISORY BANNER -->
+          <div id="qx-ui-advisory" class="qx-advisory-box qx-hidden"></div>
+
           <div class="qx-tf-box">
             <div class="qx-row-sm"><span>15m Trend:</span> <strong id="qx-ui-15m">Neutral</strong></div>
             <div class="qx-row-sm"><span>5m Trend:</span> <strong id="qx-ui-5m">Neutral</strong></div>
@@ -499,6 +509,9 @@
     else mountUI();
   }, 400);
 
+  // ==========================================
+  // DYNAMIC 55s LOCK & WATCHDOG ENGINE
+  // ==========================================
   function updateAnalysis() {
     const dec = state.decimals !== undefined ? state.decimals : 3;
 
@@ -506,7 +519,6 @@
     if (state.livePrice !== null && cleanCandles.length > 0) {
       cleanCandles = cleanCandles.filter(c => Math.abs(c.close - state.livePrice) / state.livePrice < 0.3);
     }
-
     if (state.currentCandle) cleanCandles.push(state.currentCandle);
 
     const m5List = getAggregate(cleanCandles, null, 5);
@@ -522,14 +534,12 @@
     const rsi = calcRSI(cleanCandles, 14);
     const sr = calcSR(cleanCandles);
 
-    // Accurate 15m trend (checks close vs open of latest 15m candle)
     let trend15m = "Neutral";
     if (m15List.length >= 1) {
       const last15 = m15List[m15List.length - 1];
       trend15m = last15.close >= last15.open ? "Bullish" : "Bearish";
     }
 
-    // Accurate 5m trend (checks current vs previous 5m close)
     let trend5m = "Neutral";
     if (m5List.length >= 2) {
       const cur5 = m5List[m5List.length - 1];
@@ -537,22 +547,108 @@
       trend5m = cur5.close >= prev5.close ? "Bullish" : "Bearish";
     }
 
-    // Compute live confluence verdict & score
-    const verdict = evaluateConfluence(trend15m, trend5m, rsi, state.livePrice, sr, state.currentCandle);
+    // Evaluate live confluence
+    const liveVerdict = evaluateConfluence(trend15m, trend5m, rsi, state.livePrice, sr);
+
+    // Current seconds into active 1-minute candle
+    const now = Date.now();
+    const sec = Math.floor((now % 60000) / 1000);
+    const remSec = 60 - sec;
+    const currentMinFloor = Math.floor(now / 60000) * 60000;
+
+    // Update Candle Timer Badge
+    const timerEl = document.getElementById("qx-ui-timer");
+    if (timerEl) {
+      if (sec < 55) {
+        timerEl.textContent = `00:${String(remSec).padStart(2, '0')}s [Analyzing]`;
+        timerEl.className = "qx-timer-badge qx-timer-analyzing";
+      } else {
+        timerEl.textContent = `00:${String(remSec).padStart(2, '0')}s [LOCKED]`;
+        timerEl.className = "qx-timer-badge qx-timer-locked";
+      }
+    }
 
     const setupEl = document.getElementById("qx-ui-setup");
-    if (setupEl) {
-      setupEl.textContent = verdict.setup;
-      setupEl.style.color = verdict.color;
-    }
-
     const scoreEl = document.getElementById("qx-ui-score");
-    if (scoreEl) {
-      scoreEl.textContent = `${verdict.score} / 5`;
-      scoreEl.style.background = verdict.score >= 3 ? (verdict.setup.includes("CALL") ? "#065f46" : "#7f1d1d") : "#2d3748";
-      scoreEl.style.color = verdict.score >= 3 ? "#ffffff" : "#cbd5e1";
+    const advisoryEl = document.getElementById("qx-ui-advisory");
+
+    // ========================================
+    // STAGE 1: 00s - 54s (Developing Phase)
+    // ========================================
+    if (sec < 55) {
+      state.lockedVerdict = null;
+      state.lockedMinute = -1;
+      state.hasFlipped = false;
+      state.flipMessage = "";
+
+      if (setupEl) {
+        setupEl.textContent = `Analyzing (Locks in ${55 - sec}s)`;
+        setupEl.style.color = "#94a3b8";
+      }
+      if (scoreEl) {
+        scoreEl.textContent = `${liveVerdict.score} / 5 (Forming)`;
+        scoreEl.style.background = "#2d3748";
+        scoreEl.style.color = "#cbd5e1";
+      }
+      if (advisoryEl) {
+        advisoryEl.className = "qx-advisory-box qx-hidden";
+        advisoryEl.textContent = "";
+      }
     }
 
+    // ========================================
+    // STAGE 2: 55s - 59s (Lock-in + Watchdog)
+    // ========================================
+    else {
+      // 1. Lock signal at second 55
+      if (!state.lockedVerdict || state.lockedMinute !== currentMinFloor) {
+        state.lockedVerdict = Object.assign({}, liveVerdict);
+        state.lockedMinute = currentMinFloor;
+        state.hasFlipped = false;
+        state.flipMessage = "";
+      }
+
+      // 2. Frozen Visual Display (Does NOT change with ticks)
+      if (setupEl) {
+        setupEl.textContent = `${state.lockedVerdict.setup} [FROZEN]`;
+        setupEl.style.color = state.lockedVerdict.color;
+      }
+      if (scoreEl) {
+        scoreEl.textContent = `${state.lockedVerdict.score} / 5`;
+        scoreEl.style.background = state.lockedVerdict.score >= 3 
+          ? (state.lockedVerdict.dir === "CALL" ? "#065f46" : "#7f1d1d") 
+          : "#2d3748";
+        scoreEl.style.color = "#ffffff";
+      }
+
+      // 3. BACKGROUND WATCHDOG: Detect if live ticks cause a flip
+      if (state.lockedVerdict.dir !== "NONE") {
+        const isFlippedNow = (state.lockedVerdict.dir === "CALL" && liveVerdict.dir !== "CALL") ||
+                             (state.lockedVerdict.dir === "PUT" && liveVerdict.dir !== "PUT") ||
+                             (liveVerdict.score < 2);
+
+        if (isFlippedNow) {
+          state.hasFlipped = true;
+          state.flipMessage = `⚠️ FLIP DETECTED: Setup shifted to ${liveVerdict.setup} (${liveVerdict.score}/5) — DO NOT TRADE!`;
+        }
+      }
+
+      // 4. DYNAMIC ADVISORY BANNER RENDER
+      if (advisoryEl) {
+        if (state.hasFlipped) {
+          advisoryEl.className = "qx-advisory-box qx-advisory-flip";
+          advisoryEl.textContent = state.flipMessage;
+        } else if (state.lockedVerdict.dir !== "NONE") {
+          advisoryEl.className = "qx-advisory-box qx-advisory-ready";
+          advisoryEl.textContent = `✓ Signal Stable — Prepare ${state.lockedVerdict.dir} entry at :00s`;
+        } else {
+          advisoryEl.className = "qx-advisory-box qx-advisory-neutral";
+          advisoryEl.textContent = "No Trade Setup for next candle.";
+        }
+      }
+    }
+
+    // Sub-indicators
     const m15El = document.getElementById("qx-ui-15m");
     if (m15El) {
       m15El.textContent = trend15m;
@@ -578,6 +674,9 @@
       srEl.textContent = sr.s && sr.r ? `S: ${sr.s.toFixed(dec)} | R: ${sr.r.toFixed(dec)}` : "Accumulating";
     }
   }
+
+  // Smooth interval timer to advance seconds countdown even when ticks pause
+  setInterval(updateAnalysis, 250);
 
   function updateUI() {
     const assetEl = document.getElementById("qx-ui-asset");

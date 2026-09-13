@@ -2,7 +2,7 @@
   position: fixed;
   top: 70px;
   right: 20px;
-  width: 285px;
+  width: 290px;
   background: #151821;
   color: #e2e8f0;
   border: 1px solid #2d3748;
@@ -99,9 +99,66 @@
   color: #cbd5e1;
   font-size: 10px;
   font-weight: 700;
-  padding: 1px 6px;
+  padding: 2px 7px;
   border-radius: 10px;
 }
+.qx-timer-badge {
+  font-family: monospace;
+  font-weight: 700;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+.qx-timer-analyzing {
+  background: #1e293b;
+  color: #94a3b8;
+  border: 1px solid #334155;
+}
+.qx-timer-locked {
+  background: #7c2d12;
+  color: #fca5a5;
+  border: 1px solid #dc2626;
+  animation: qx-pulse 1s infinite alternate;
+}
+
+/* DYNAMIC ADVISORY BOXES */
+.qx-advisory-box {
+  margin: 6px 0;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  line-height: 1.35;
+  font-weight: 600;
+}
+.qx-advisory-flip {
+  background: #450a0a;
+  border: 1px solid #ef4444;
+  color: #fecaca;
+  animation: qx-flash 0.8s infinite alternate;
+}
+.qx-advisory-ready {
+  background: #064e3b;
+  border: 1px solid #10b981;
+  color: #a7f3d0;
+}
+.qx-advisory-neutral {
+  background: #1e2433;
+  border: 1px solid #334155;
+  color: #94a3b8;
+}
+.qx-hidden {
+  display: none !important;
+}
+
+@keyframes qx-pulse {
+  from { opacity: 0.85; }
+  to { opacity: 1; filter: brightness(1.2); }
+}
+@keyframes qx-flash {
+  from { background-color: #450a0a; }
+  to { background-color: #7f1d1d; }
+}
+
 .qx-tf-box {
   background: #131620;
   border: 1px solid #232838;
