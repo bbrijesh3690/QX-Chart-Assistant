@@ -1,5 +1,5 @@
 (function () {
-  const VAULT_KEY = "__QX_ASSET_VAULT_V6__";
+  const VAULT_KEY = "__QX_ASSET_VAULT_V7__";
   const assetVault = new Map();
   const globalHistoryPool = [];
 
@@ -26,10 +26,11 @@
         livePrice: null,
         rawPrice: null,
         decimals: 3,
-        lockedVerdict: null,
-        lockedMinute: -1,
-        hasFlipped: false,
-        flipMessage: ""
+        activeSignal: null,       // Signal currently active on the running candle
+        activeScore: 0,
+        activeFlipped: false,     // Sticky flip state across 0s-54s
+        activeFlipMsg: "",
+        evalMinute: -1
       };
     }
     if (!assetVault.has(name)) {
@@ -39,10 +40,11 @@
         livePrice: null,
         rawPrice: null,
         decimals: 3,
-        lockedVerdict: null,
-        lockedMinute: -1,
-        hasFlipped: false,
-        flipMessage: ""
+        activeSignal: null,
+        activeScore: 0,
+        activeFlipped: false,
+        activeFlipMsg: "",
+        evalMinute: -1
       });
     }
     return assetVault.get(name);
@@ -196,7 +198,7 @@
   }, 350);
 
   // ==========================================
-  // PRICE & CANDLE INGESTION
+  // CANDLE INGESTION
   // ==========================================
   function ingestFastTick(price, rawText, decimals, time) {
     if (activeAsset === "Detecting...") {
@@ -233,12 +235,6 @@
       state.candles1m.push(Object.assign({}, state.currentCandle));
       if (state.candles1m.length > 240) state.candles1m.shift();
       state.currentCandle = { time: minFloor, open: price, high: price, low: price, close: price };
-      
-      // Minute rollover: reset lock and watchdog
-      state.lockedVerdict = null;
-      state.lockedMinute = -1;
-      state.hasFlipped = false;
-      state.flipMessage = "";
       saveVault();
     }
 
@@ -367,7 +363,7 @@
       <div id="qx-panel-header">
         <div id="qx-panel-title">
           <span class="qx-badge">READ ONLY</span>
-          <strong>QX Assistant</strong> <small>v1.4.8</small>
+          <strong>QX Assistant</strong> <small>v1.4.9</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-refresh" title="Synchronize Tabs & History">[Sync]</button>
@@ -392,9 +388,9 @@
         </div>
 
         <div class="qx-section">
-          <div class="qx-section-title">NEXT CANDLE SIGNAL (:55s LOCK)</div>
+          <div class="qx-section-title">CANDLE SIGNAL ENGINE</div>
           <div class="qx-row">
-            <span class="qx-label">Setup:</span>
+            <span class="qx-label">Signal:</span>
             <strong id="qx-ui-setup" class="qx-accent">Analyzing...</strong>
           </div>
           <div class="qx-row">
@@ -402,7 +398,7 @@
             <span id="qx-ui-score" class="qx-pill">-- / 5</span>
           </div>
 
-          <!-- DYNAMIC FLIP ADVISORY BANNER -->
+          <!-- PERSISTENT FLIP & ADVISORY BANNER -->
           <div id="qx-ui-advisory" class="qx-advisory-box qx-hidden"></div>
 
           <div class="qx-tf-box">
@@ -510,7 +506,7 @@
   }, 400);
 
   // ==========================================
-  // DYNAMIC 55s LOCK & WATCHDOG ENGINE
+  // PERSISTENT SIGNAL & STICKY FLIP ENGINE
   // ==========================================
   function updateAnalysis() {
     const dec = state.decimals !== undefined ? state.decimals : 3;
@@ -547,103 +543,119 @@
       trend5m = cur5.close >= prev5.close ? "Bullish" : "Bearish";
     }
 
-    // Evaluate live confluence
     const liveVerdict = evaluateConfluence(trend15m, trend5m, rsi, state.livePrice, sr);
 
-    // Current seconds into active 1-minute candle
     const now = Date.now();
     const sec = Math.floor((now % 60000) / 1000);
     const remSec = 60 - sec;
     const currentMinFloor = Math.floor(now / 60000) * 60000;
 
-    // Update Candle Timer Badge
     const timerEl = document.getElementById("qx-ui-timer");
     if (timerEl) {
       if (sec < 55) {
-        timerEl.textContent = `00:${String(remSec).padStart(2, '0')}s [Analyzing]`;
+        timerEl.textContent = `00:${String(remSec).padStart(2, '0')}s [Active Candle]`;
         timerEl.className = "qx-timer-badge qx-timer-analyzing";
       } else {
-        timerEl.textContent = `00:${String(remSec).padStart(2, '0')}s [LOCKED]`;
+        timerEl.textContent = `00:${String(remSec).padStart(2, '0')}s [LOCKING NEXT]`;
         timerEl.className = "qx-timer-badge qx-timer-locked";
       }
     }
 
-    const setupEl = document.getElementById("qx-ui-setup");
+    const signalEl = document.getElementById("qx-ui-setup");
     const scoreEl = document.getElementById("qx-ui-score");
     const advisoryEl = document.getElementById("qx-ui-advisory");
 
-    // ========================================
-    // STAGE 1: 00s - 54s (Developing Phase)
-    // ========================================
-    if (sec < 55) {
-      state.lockedVerdict = null;
-      state.lockedMinute = -1;
-      state.hasFlipped = false;
-      state.flipMessage = "";
-
-      if (setupEl) {
-        setupEl.textContent = `Analyzing (Locks in ${55 - sec}s)`;
-        setupEl.style.color = "#94a3b8";
-      }
-      if (scoreEl) {
-        scoreEl.textContent = `${liveVerdict.score} / 5 (Forming)`;
-        scoreEl.style.background = "#2d3748";
-        scoreEl.style.color = "#cbd5e1";
-      }
-      if (advisoryEl) {
-        advisoryEl.className = "qx-advisory-box qx-hidden";
-        advisoryEl.textContent = "";
-      }
-    }
-
-    // ========================================
-    // STAGE 2: 55s - 59s (Lock-in + Watchdog)
-    // ========================================
-    else {
-      // 1. Lock signal at second 55
-      if (!state.lockedVerdict || state.lockedMinute !== currentMinFloor) {
-        state.lockedVerdict = Object.assign({}, liveVerdict);
-        state.lockedMinute = currentMinFloor;
-        state.hasFlipped = false;
-        state.flipMessage = "";
+    // ==============================================================
+    // WINDOW A: 55s - 59s (Lock Signal for Next Bar + Run Watchdog)
+    // ==============================================================
+    if (sec >= 55) {
+      // First tick at :55s locks in the target for the upcoming candle
+      if (state.evalMinute !== currentMinFloor) {
+        state.activeSignal = Object.assign({}, liveVerdict);
+        state.activeScore = liveVerdict.score;
+        state.evalMinute = currentMinFloor;
+        state.activeFlipped = false;
+        state.activeFlipMsg = "";
       }
 
-      // 2. Frozen Visual Display (Does NOT change with ticks)
-      if (setupEl) {
-        setupEl.textContent = `${state.lockedVerdict.setup} [FROZEN]`;
-        setupEl.style.color = state.lockedVerdict.color;
-      }
-      if (scoreEl) {
-        scoreEl.textContent = `${state.lockedVerdict.score} / 5`;
-        scoreEl.style.background = state.lockedVerdict.score >= 3 
-          ? (state.lockedVerdict.dir === "CALL" ? "#065f46" : "#7f1d1d") 
-          : "#2d3748";
-        scoreEl.style.color = "#ffffff";
-      }
-
-      // 3. BACKGROUND WATCHDOG: Detect if live ticks cause a flip
-      if (state.lockedVerdict.dir !== "NONE") {
-        const isFlippedNow = (state.lockedVerdict.dir === "CALL" && liveVerdict.dir !== "CALL") ||
-                             (state.lockedVerdict.dir === "PUT" && liveVerdict.dir !== "PUT") ||
-                             (liveVerdict.score < 2);
-
-        if (isFlippedNow) {
-          state.hasFlipped = true;
-          state.flipMessage = `⚠️ FLIP DETECTED: Setup shifted to ${liveVerdict.setup} (${liveVerdict.score}/5) — DO NOT TRADE!`;
+      // Background Watchdog: check for late flip before candle closes
+      if (state.activeSignal && state.activeSignal.dir !== "NONE") {
+        const flippedNow = (state.activeSignal.dir === "CALL" && liveVerdict.dir !== "CALL") ||
+                           (state.activeSignal.dir === "PUT" && liveVerdict.dir !== "PUT") ||
+                           (liveVerdict.score < 2);
+        if (flippedNow) {
+          state.activeFlipped = true;
+          state.activeFlipMsg = `⚠️ FLIP DETECTED: Setup turned ${liveVerdict.setup} in final 5s — DO NOT TRADE!`;
         }
       }
 
-      // 4. DYNAMIC ADVISORY BANNER RENDER
+      // Display Lock
+      if (signalEl && state.activeSignal) {
+        signalEl.textContent = `${state.activeSignal.setup} [LOCKED FOR :00s]`;
+        signalEl.style.color = state.activeSignal.color;
+      }
+      if (scoreEl && state.activeSignal) {
+        scoreEl.textContent = `${state.activeScore} / 5`;
+        scoreEl.style.background = state.activeScore >= 3 
+          ? (state.activeSignal.dir === "CALL" ? "#065f46" : "#7f1d1d") 
+          : "#2d3748";
+        scoreEl.style.color = "#ffffff";
+      }
       if (advisoryEl) {
-        if (state.hasFlipped) {
+        if (state.activeFlipped) {
           advisoryEl.className = "qx-advisory-box qx-advisory-flip";
-          advisoryEl.textContent = state.flipMessage;
-        } else if (state.lockedVerdict.dir !== "NONE") {
+          advisoryEl.textContent = state.activeFlipMsg;
+        } else if (state.activeSignal && state.activeSignal.dir !== "NONE") {
           advisoryEl.className = "qx-advisory-box qx-advisory-ready";
-          advisoryEl.textContent = `✓ Signal Stable — Prepare ${state.lockedVerdict.dir} entry at :00s`;
+          advisoryEl.textContent = `✓ Signal Stable — Prepare ${state.activeSignal.dir} entry at :00s`;
         } else {
           advisoryEl.className = "qx-advisory-box qx-advisory-neutral";
-          advisoryEl.textContent = "No Trade Setup for next candle.";
+          advisoryEl.textContent = "No Trade Signal for upcoming candle.";
+        }
+      }
+    }
+
+    // ==============================================================
+    // WINDOW B: 00s - 54s (Active Candle Running: RETAIN & PERSIST)
+    // ==============================================================
+    else {
+      const waitTime = 55 - sec;
+
+      if (signalEl) {
+        if (state.activeSignal) {
+          signalEl.textContent = `${state.activeSignal.setup} [Active] (Analyzing next in ${waitTime}s)`;
+          signalEl.style.color = state.activeSignal.color;
+        } else {
+          signalEl.textContent = `Analyzing (Locks in ${waitTime}s)`;
+          signalEl.style.color = "#94a3b8";
+        }
+      }
+
+      if (scoreEl) {
+        if (state.activeSignal) {
+          scoreEl.textContent = `${state.activeScore} / 5 (Active)`;
+          scoreEl.style.background = state.activeScore >= 3 
+            ? (state.activeSignal.dir === "CALL" ? "#065f46" : "#7f1d1d") 
+            : "#2d3748";
+          scoreEl.style.color = "#ffffff";
+        } else {
+          scoreEl.textContent = `${liveVerdict.score} / 5 (Forming)`;
+          scoreEl.style.background = "#2d3748";
+          scoreEl.style.color = "#cbd5e1";
+        }
+      }
+
+      // PERSISTENT FLIP BANNER: Remains visible through 54s so trader stays disciplined!
+      if (advisoryEl) {
+        if (state.activeFlipped) {
+          advisoryEl.className = "qx-advisory-box qx-advisory-flip";
+          advisoryEl.textContent = `⚠️ FLIPPED IN PREV 5s: Trade was skipped. Awaiting new signal (${waitTime}s)`;
+        } else if (state.activeSignal && state.activeSignal.dir !== "NONE") {
+          advisoryEl.className = "qx-advisory-box qx-advisory-ready";
+          advisoryEl.textContent = `✓ Active Trade Running — Analyzing next candle in ${waitTime}s`;
+        } else {
+          advisoryEl.className = "qx-advisory-box qx-hidden";
+          advisoryEl.textContent = "";
         }
       }
     }
@@ -675,7 +687,6 @@
     }
   }
 
-  // Smooth interval timer to advance seconds countdown even when ticks pause
   setInterval(updateAnalysis, 250);
 
   function updateUI() {
