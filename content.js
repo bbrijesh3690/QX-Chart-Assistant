@@ -1,7 +1,7 @@
 (function () {
-  const VAULT_KEY = "__QX_ASSET_VAULT_V27__";
-  const LOG_KEY = "__QX_SHARED_LOG_V15__";
-  const PENDING_KEY = "__QX_SHARED_PENDING_V13__";
+  const VAULT_KEY = "__QX_ASSET_VAULT_V28__";
+  const LOG_KEY = "__QX_SHARED_LOG_V16__";
+  const PENDING_KEY = "__QX_SHARED_PENDING_V14__";
 
   const assetVault = new Map();
   const globalHistoryPool = [];
@@ -663,6 +663,104 @@
   }
 
   // ==============================================================
+  // ON-DEMAND BACKTEST COMPUTATION HELPER
+  // ==============================================================
+  function computeBacktestData(candles) {
+    if (!candles || candles.length < 25) return null;
+
+    let strongWins = 0, strongLosses = 0, strongTies = 0, strongCount = 0;
+    let biasWins = 0, biasLosses = 0, biasTies = 0, biasCount = 0;
+    let skippedNeutral = 0;
+    let currentWinStreak = 0, maxWinStreak = 0;
+    let currentLossStreak = 0, maxLossStreak = 0;
+
+    const warmupCount = 20;
+    for (let i = warmupCount; i < candles.length - 1; i++) {
+      const subCandles = candles.slice(0, i + 1);
+      const curCandle = subCandles[subCandles.length - 1];
+      const m5 = getAggregate(subCandles, null, 5);
+      const m15 = getAggregate(subCandles, null, 15);
+      const rsi = calcRSI(subCandles, 14);
+      const sr = calcSR(subCandles);
+
+      let trend15m = "Neutral";
+      if (m15.length >= 1) {
+        const last15 = m15[m15.length - 1];
+        trend15m = last15.close >= last15.open ? "Bullish" : "Bearish";
+      }
+
+      let trend5m = "Neutral";
+      if (m5.length >= 2) {
+        const cur5 = m5[m5.length - 1];
+        const prev5 = m5[m5.length - 2];
+        trend5m = cur5.close >= prev5.close ? "Bullish" : "Bearish";
+      }
+
+      const verdict = evaluateBacktestConfluence(trend15m, trend5m, rsi, curCandle, sr);
+
+      if (verdict.dir === "NONE") {
+        skippedNeutral++;
+      } else {
+        const targetCandle = candles[i + 1];
+        const entry = targetCandle.open;
+        const exit = targetCandle.close;
+
+        let outcome = "TIE";
+        if (verdict.dir === "CALL") {
+          outcome = exit > entry ? "WIN" : (exit < entry ? "LOSS" : "TIE");
+        } else if (verdict.dir === "PUT") {
+          outcome = exit < entry ? "WIN" : (exit > entry ? "LOSS" : "TIE");
+        }
+
+        if (verdict.tier === "STRONG") {
+          strongCount++;
+          if (outcome === "WIN") strongWins++;
+          else if (outcome === "LOSS") strongLosses++;
+          else strongTies++;
+        } else if (verdict.tier === "BIAS") {
+          biasCount++;
+          if (outcome === "WIN") biasWins++;
+          else if (outcome === "LOSS") biasLosses++;
+          else biasTies++;
+        }
+
+        if (outcome === "WIN") {
+          currentWinStreak++;
+          if (currentWinStreak > maxWinStreak) maxWinStreak = currentWinStreak;
+          currentLossStreak = 0;
+        } else if (outcome === "LOSS") {
+          currentLossStreak++;
+          if (currentLossStreak > maxLossStreak) maxLossStreak = currentLossStreak;
+          currentWinStreak = 0;
+        }
+      }
+    }
+
+    const totalCount = strongCount + biasCount;
+    const totalWins = strongWins + biasWins;
+    const totalLosses = strongLosses + biasLosses;
+
+    const strongDecided = strongWins + strongLosses;
+    const strongWr = strongDecided > 0 ? ((strongWins / strongDecided) * 100).toFixed(1) : "0.0";
+
+    const biasDecided = biasWins + biasLosses;
+    const biasWr = biasDecided > 0 ? ((biasWins / biasDecided) * 100).toFixed(1) : "0.0";
+
+    const totalDecided = totalWins + totalLosses;
+    const totalWr = totalDecided > 0 ? ((totalWins / totalDecided) * 100).toFixed(1) : "0.0";
+
+    const spanHours = (candles.length / 60).toFixed(1);
+
+    return {
+      strongCount, strongWins, strongLosses, strongTies, strongWr,
+      biasCount, biasWins, biasLosses, biasTies, biasWr,
+      totalCount, totalWins, totalLosses, totalWr,
+      maxWinStreak, maxLossStreak, skippedNeutral,
+      spanHours
+    };
+  }
+
+  // ==============================================================
   // ZERO-DEPENDENCY NATIVE OPENXML (.XLSX) BUILDER
   // ==============================================================
   const crcTable = new Uint32Array(256);
@@ -688,23 +786,22 @@
 
     let totalLen = 0;
     entries.forEach(e => {
-      totalLen += 30 + e.nameBytes.length + e.size; // Local header
-      totalLen += 46 + e.nameBytes.length; // Central directory
+      totalLen += 30 + e.nameBytes.length + e.size;
+      totalLen += 46 + e.nameBytes.length;
     });
-    totalLen += 22; // EOCD
+    totalLen += 22;
 
     const buf = new Uint8Array(totalLen);
     const view = new DataView(buf.buffer);
     let offset = 0;
     const cdList = [];
 
-    // Local headers & content
     entries.forEach(e => {
       const localOffset = offset;
       view.setUint32(offset, 0x04034b50, true);
       view.setUint16(offset + 4, 10, true);
       view.setUint16(offset + 6, 0, true);
-      view.setUint16(offset + 8, 0, true); // Stored (no compression)
+      view.setUint16(offset + 8, 0, true);
       view.setUint16(offset + 10, 0, true);
       view.setUint16(offset + 12, 0, true);
       view.setUint32(offset + 14, e.crc, true);
@@ -725,7 +822,6 @@
 
     const cdStart = offset;
 
-    // Central Directory
     cdList.forEach(e => {
       view.setUint32(offset, 0x02014b50, true);
       view.setUint16(offset + 4, 20, true);
@@ -752,7 +848,6 @@
 
     const cdSize = offset - cdStart;
 
-    // End of Central Directory
     view.setUint32(offset, 0x06054b50, true);
     view.setUint16(offset + 4, 0, true);
     view.setUint16(offset + 6, 0, true);
@@ -817,14 +912,7 @@
   <sheetData>${s1RowsXml}</sheetData>
 </worksheet>`;
 
-    // 2. Build Sheet 2 (Historical 1M Candles) XML
-    const s2Headers = ["Timestamp", "Time", "Asset", "Open", "High", "Low", "Close", "RSI (14)", "Support (20-bar)", "Resistance (20-bar)"];
-    let s2RowsXml = `<row r="1">`;
-    s2Headers.forEach((h, idx) => {
-      s2RowsXml += `<c r="${colLetters(idx + 1)}1" t="inlineStr"><is><t>${escapeXml(h)}</t></is></c>`;
-    });
-    s2RowsXml += `</row>`;
-
+    // 2. Build Sheet 2: "Bank-Statement" Style Backward.test Summary + 1M Candles
     const assetsToExport = [];
     if (assetVault.size > 0) {
       for (const [name, data] of assetVault.entries()) {
@@ -837,9 +925,123 @@
       assetsToExport.push({ name: activeAsset, candles: state.candles1m, dec: state.decimals || 3 });
     }
 
-    let currentRow = 2;
+    let s2RowsXml = "";
+    let currentRow = 1;
+
     assetsToExport.forEach(item => {
       const cList = item.candles;
+      const bt = computeBacktestData(cList);
+      const nowStr = new Date().toLocaleTimeString();
+
+      // --- BANK STATEMENT SUMMARY BLOCK ---
+      s2RowsXml += `<row r="${currentRow}">
+        <c r="A${currentRow}" t="inlineStr"><is><t>BACKWARD.TEST SUMMARY REPORT - ${escapeXml(item.name)}</t></is></c>
+      </row>`;
+      currentRow++;
+
+      s2RowsXml += `<row r="${currentRow}">
+        <c r="A${currentRow}" t="inlineStr"><is><t>Asset: ${escapeXml(item.name)}</t></is></c>
+        <c r="C${currentRow}" t="inlineStr"><is><t>Total 1M Candles: ${cList.length} (~${bt ? bt.spanHours : '0'} Hours)</t></is></c>
+        <c r="F${currentRow}" t="inlineStr"><is><t>Report Generated: ${nowStr}</t></is></c>
+      </row>`;
+      currentRow++;
+
+      // Spacer
+      s2RowsXml += `<row r="${currentRow}"></row>`;
+      currentRow++;
+
+      // Summary Table Headers
+      s2RowsXml += `<row r="${currentRow}">
+        <c r="A${currentRow}" t="inlineStr"><is><t>Tier</t></is></c>
+        <c r="B${currentRow}" t="inlineStr"><is><t>Setups Count</t></is></c>
+        <c r="C${currentRow}" t="inlineStr"><is><t>Wins</t></is></c>
+        <c r="D${currentRow}" t="inlineStr"><is><t>Losses</t></is></c>
+        <c r="E${currentRow}" t="inlineStr"><is><t>Ties</t></is></c>
+        <c r="F${currentRow}" t="inlineStr"><is><t>Win Rate</t></is></c>
+      </row>`;
+      currentRow++;
+
+      if (bt) {
+        // Strong Row
+        s2RowsXml += `<row r="${currentRow}">
+          <c r="A${currentRow}" t="inlineStr"><is><t>Strong [S]</t></is></c>
+          <c r="B${currentRow}"><v>${bt.strongCount}</v></c>
+          <c r="C${currentRow}"><v>${bt.strongWins}</v></c>
+          <c r="D${currentRow}"><v>${bt.strongLosses}</v></c>
+          <c r="E${currentRow}"><v>${bt.strongTies}</v></c>
+          <c r="F${currentRow}" t="inlineStr"><is><t>${bt.strongWr}%</t></is></c>
+        </row>`;
+        currentRow++;
+
+        // Bias Row
+        s2RowsXml += `<row r="${currentRow}">
+          <c r="A${currentRow}" t="inlineStr"><is><t>Bias [B]</t></is></c>
+          <c r="B${currentRow}"><v>${bt.biasCount}</v></c>
+          <c r="C${currentRow}"><v>${bt.biasWins}</v></c>
+          <c r="D${currentRow}"><v>${bt.biasLosses}</v></c>
+          <c r="E${currentRow}"><v>${bt.biasTies}</v></c>
+          <c r="F${currentRow}" t="inlineStr"><is><t>${bt.biasWr}%</t></is></c>
+        </row>`;
+        currentRow++;
+
+        // Combined Row
+        s2RowsXml += `<row r="${currentRow}">
+          <c r="A${currentRow}" t="inlineStr"><is><t>Combined Total</t></is></c>
+          <c r="B${currentRow}"><v>${bt.totalCount}</v></c>
+          <c r="C${currentRow}"><v>${bt.totalWins}</v></c>
+          <c r="D${currentRow}"><v>${bt.totalLosses}</v></c>
+          <c r="E${currentRow}"><v>${bt.strongTies + bt.biasTies}</v></c>
+          <c r="F${currentRow}" t="inlineStr"><is><t>${bt.totalWr}%</t></is></c>
+        </row>`;
+        currentRow++;
+
+        // Spacer
+        s2RowsXml += `<row r="${currentRow}"></row>`;
+        currentRow++;
+
+        // Streak Analysis Row
+        s2RowsXml += `<row r="${currentRow}">
+          <c r="A${currentRow}" t="inlineStr"><is><t>Streak Analysis:</t></is></c>
+          <c r="B${currentRow}" t="inlineStr"><is><t>Max Win Streak: ${bt.maxWinStreak}W</t></is></c>
+          <c r="D${currentRow}" t="inlineStr"><is><t>Max Loss Streak: ${bt.maxLossStreak}L</t></is></c>
+        </row>`;
+        currentRow++;
+
+        // Bar Accounting Row
+        s2RowsXml += `<row r="${currentRow}">
+          <c r="A${currentRow}" t="inlineStr"><is><t>Bar Accounting:</t></is></c>
+          <c r="B${currentRow}" t="inlineStr"><is><t>${bt.totalCount} Traded Setups</t></is></c>
+          <c r="C${currentRow}" t="inlineStr"><is><t>${bt.skippedNeutral} Neutral Skipped</t></is></c>
+          <c r="D${currentRow}" t="inlineStr"><is><t>20 Warmup Buffer</t></is></c>
+        </row>`;
+        currentRow++;
+      } else {
+        s2RowsXml += `<row r="${currentRow}">
+          <c r="A${currentRow}" t="inlineStr"><is><t>Insufficient candle history for backtest calculation (&lt; 25 bars).</t></is></c>
+        </row>`;
+        currentRow++;
+      }
+
+      // Spacer before raw candles table
+      s2RowsXml += `<row r="${currentRow}"></row>`;
+      currentRow++;
+
+      // Section Title: Historical 1M Raw Candles
+      s2RowsXml += `<row r="${currentRow}">
+        <c r="A${currentRow}" t="inlineStr"><is><t>HISTORICAL 1-MINUTE RAW CANDLES &amp; INDICATORS</t></is></c>
+      </row>`;
+      currentRow++;
+
+      // Candle Table Column Headers
+      const s2Headers = ["Timestamp", "Time", "Asset", "Open", "High", "Low", "Close", "RSI (14)", "Support (20-bar)", "Resistance (20-bar)"];
+      s2RowsXml += `<row r="${currentRow}">`;
+      s2Headers.forEach((h, idx) => {
+        s2RowsXml += `<c r="${colLetters(idx + 1)}${currentRow}" t="inlineStr"><is><t>${escapeXml(h)}</t></is></c>`;
+      });
+      s2RowsXml += `</row>`;
+      currentRow++;
+
+      // Candle Data Rows
       for (let i = 0; i < cList.length; i++) {
         const c = cList[i];
         const sub = cList.slice(0, i + 1);
@@ -862,6 +1064,10 @@
         </row>`;
         currentRow++;
       }
+
+      // Spacer between assets if multiple
+      s2RowsXml += `<row r="${currentRow}"></row>`;
+      currentRow++;
     });
 
     const sheet2Xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -962,113 +1168,30 @@
       return;
     }
 
-    let strongWins = 0, strongLosses = 0, strongTies = 0, strongCount = 0;
-    let biasWins = 0, biasLosses = 0, biasTies = 0, biasCount = 0;
-    let skippedNeutral = 0;
-    let currentWinStreak = 0, maxWinStreak = 0;
-    let currentLossStreak = 0, maxLossStreak = 0;
-
-    const warmupCount = 20;
-    const evaluatedTotal = candles.length - 1 - warmupCount;
-
-    for (let i = warmupCount; i < candles.length - 1; i++) {
-      const subCandles = candles.slice(0, i + 1);
-      const curCandle = subCandles[subCandles.length - 1];
-      const m5 = getAggregate(subCandles, null, 5);
-      const m15 = getAggregate(subCandles, null, 15);
-      const rsi = calcRSI(subCandles, 14);
-      const sr = calcSR(subCandles);
-
-      let trend15m = "Neutral";
-      if (m15.length >= 1) {
-        const last15 = m15[m15.length - 1];
-        trend15m = last15.close >= last15.open ? "Bullish" : "Bearish";
-      }
-
-      let trend5m = "Neutral";
-      if (m5.length >= 2) {
-        const cur5 = m5[m5.length - 1];
-        const prev5 = m5[m5.length - 2];
-        trend5m = cur5.close >= prev5.close ? "Bullish" : "Bearish";
-      }
-
-      const verdict = evaluateBacktestConfluence(trend15m, trend5m, rsi, curCandle, sr);
-
-      if (verdict.dir === "NONE") {
-        skippedNeutral++;
-      } else {
-        const targetCandle = candles[i + 1];
-        const entry = targetCandle.open;
-        const exit = targetCandle.close;
-
-        let outcome = "TIE";
-        if (verdict.dir === "CALL") {
-          outcome = exit > entry ? "WIN" : (exit < entry ? "LOSS" : "TIE");
-        } else if (verdict.dir === "PUT") {
-          outcome = exit < entry ? "WIN" : (exit > entry ? "LOSS" : "TIE");
-        }
-
-        if (verdict.tier === "STRONG") {
-          strongCount++;
-          if (outcome === "WIN") strongWins++;
-          else if (outcome === "LOSS") strongLosses++;
-          else strongTies++;
-        } else if (verdict.tier === "BIAS") {
-          biasCount++;
-          if (outcome === "WIN") biasWins++;
-          else if (outcome === "LOSS") biasLosses++;
-          else biasTies++;
-        }
-
-        if (outcome === "WIN") {
-          currentWinStreak++;
-          if (currentWinStreak > maxWinStreak) maxWinStreak = currentWinStreak;
-          currentLossStreak = 0;
-        } else if (outcome === "LOSS") {
-          currentLossStreak++;
-          if (currentLossStreak > maxLossStreak) maxLossStreak = currentLossStreak;
-          currentWinStreak = 0;
-        }
-      }
-    }
-
-    const totalCount = strongCount + biasCount;
-    const totalWins = strongWins + biasWins;
-    const totalLosses = strongLosses + biasLosses;
-
-    const strongDecided = strongWins + strongLosses;
-    const strongWr = strongDecided > 0 ? ((strongWins / strongDecided) * 100).toFixed(1) : "0.0";
-
-    const biasDecided = biasWins + biasLosses;
-    const biasWr = biasDecided > 0 ? ((biasWins / biasDecided) * 100).toFixed(1) : "0.0";
-
-    const totalDecided = totalWins + totalLosses;
-    const totalWr = totalDecided > 0 ? ((totalWins / totalDecided) * 100).toFixed(1) : "0.0";
-
-    const spanHours = (candles.length / 60).toFixed(1);
+    const bt = computeBacktestData(candles);
 
     backtestCache.set(activeAsset, {
       asset: activeAsset,
       candlesCount: candles.length,
-      spanHours: spanHours,
-      evaluatedTotal: evaluatedTotal,
-      skippedNeutral: skippedNeutral,
-      strongCount: strongCount,
-      strongWins: strongWins,
-      strongLosses: strongLosses,
-      strongTies: strongTies,
-      strongWr: strongWr,
-      biasCount: biasCount,
-      biasWins: biasWins,
-      biasLosses: biasLosses,
-      biasTies: biasTies,
-      biasWr: biasWr,
-      totalCount: totalCount,
-      totalWins: totalWins,
-      totalLosses: totalLosses,
-      totalWr: totalWr,
-      maxWinStreak: maxWinStreak,
-      maxLossStreak: maxLossStreak,
+      spanHours: bt.spanHours,
+      evaluatedTotal: candles.length - 1 - 20,
+      skippedNeutral: bt.skippedNeutral,
+      strongCount: bt.strongCount,
+      strongWins: bt.strongWins,
+      strongLosses: bt.strongLosses,
+      strongTies: bt.strongTies,
+      strongWr: bt.strongWr,
+      biasCount: bt.biasCount,
+      biasWins: bt.biasWins,
+      biasLosses: bt.biasLosses,
+      biasTies: bt.biasTies,
+      biasWr: bt.biasWr,
+      totalCount: bt.totalCount,
+      totalWins: bt.totalWins,
+      totalLosses: bt.totalLosses,
+      totalWr: bt.totalWr,
+      maxWinStreak: bt.maxWinStreak,
+      maxLossStreak: bt.maxLossStreak,
       testedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     });
 
@@ -1242,7 +1365,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.30</small>
+          <strong>QX Assistant</strong> <small>v1.4.31</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-sound-strong" class="qx-audio-btn" title="Toggle Strong Alerts (Triple Fanfare x3)">${strongSoundEnabled ? "S:🔊" : "S:🔇"}</button>
@@ -1307,7 +1430,7 @@
             </div>
             <div id="qx-forward-controls" class="qx-tab-actions">
               <span id="qx-log-summary" class="qx-log-pill">0W - 0L (0%)</span>
-              <button id="qx-btn-export-log" class="qx-export-btn" title="Export Native .xlsx Workbook with Forward Trades & Historical Candles">Export</button>
+              <button id="qx-btn-export-log" class="qx-export-btn" title="Export Bank-Statement Style .xlsx Workbook">Export</button>
               <button id="qx-btn-clear-log" class="qx-clear-btn" title="Reset Shared Session Log Across Windows">Clr</button>
             </div>
             <div id="qx-backtest-controls" class="qx-tab-actions qx-hidden">

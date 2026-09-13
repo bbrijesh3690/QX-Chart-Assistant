@@ -325,6 +325,7 @@
   box-shadow: 0 0 8px rgba(16, 185, 129, 0.4);
 }
 
+/* SLEEK ACTION BUTTONS */
 .qx-export-btn {
   background: #1d4ed8;
   border: 1px solid #3b82f6;
@@ -418,6 +419,7 @@
   font-size: 10.5px;
 }
 
+/* IN-COLUMN PAIR & TIER FILTER DROPDOWNS */
 .qx-th-filter {
   background: #151821;
   color: #38bdf8;
@@ -439,6 +441,7 @@
   background: #1e293b;
 }
 
+/* S / B TIER MICRO-BADGES */
 .qx-tier-badge {
   display: inline-block;
   font-size: 8px;
