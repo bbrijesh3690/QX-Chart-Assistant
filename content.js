@@ -1,7 +1,7 @@
 (function () {
-  const VAULT_KEY = "__QX_ASSET_VAULT_V22__";
-  const LOG_KEY = "__QX_SHARED_LOG_V10__";
-  const PENDING_KEY = "__QX_SHARED_PENDING_V8__";
+  const VAULT_KEY = "__QX_ASSET_VAULT_V23__";
+  const LOG_KEY = "__QX_SHARED_LOG_V11__";
+  const PENDING_KEY = "__QX_SHARED_PENDING_V9__";
 
   const assetVault = new Map();
   const globalHistoryPool = [];
@@ -14,7 +14,8 @@
 
   let tradeLog = [];
   let pendingTrades = [];
-  let currentLogFilter = "ALL";
+  let currentPairFilter = "ALL";
+  let currentTierFilter = "ALL";
   let activeTab = "FORWARD";
 
   function loadLog() {
@@ -794,33 +795,46 @@
   }
 
   // ==========================================
-  // RENDER FORWARD-TEST LOG UI
+  // RENDER FORWARD.TEST LOG WITH DUAL FILTERS
   // ==========================================
   function renderLogUI() {
     const bodyEl = document.getElementById("qx-log-body");
     const summaryEl = document.getElementById("qx-log-summary");
-    const filterEl = document.getElementById("qx-log-pair-filter");
+    const pairFilterEl = document.getElementById("qx-log-pair-filter");
+    const tierFilterEl = document.getElementById("qx-log-tier-filter");
     if (!bodyEl || !summaryEl) return;
 
-    if (filterEl) {
+    if (pairFilterEl) {
       const distinctPairs = Array.from(new Set(tradeLog.map(t => t.asset))).filter(Boolean);
-      const existingOptions = Array.from(filterEl.options).map(o => o.value);
+      const existingOptions = Array.from(pairFilterEl.options).map(o => o.value);
       const targetValues = ["ALL", ...distinctPairs];
 
       if (existingOptions.join(",") !== targetValues.join(",")) {
-        filterEl.innerHTML = `<option value="ALL">Pair (All)</option>` + 
+        pairFilterEl.innerHTML = `<option value="ALL">Pair (All)</option>` + 
           distinctPairs.map(p => `<option value="${p}">${p.replace(/\s*\(OTC\)/gi, " *").slice(0, 9)}</option>`).join("");
-        filterEl.value = targetValues.includes(currentLogFilter) ? currentLogFilter : "ALL";
+        pairFilterEl.value = targetValues.includes(currentPairFilter) ? currentPairFilter : "ALL";
       }
-      currentLogFilter = filterEl.value;
+      currentPairFilter = pairFilterEl.value;
     }
 
-    const displayList = currentLogFilter === "ALL" 
-      ? tradeLog 
-      : tradeLog.filter(t => t.asset === currentLogFilter);
+    if (tierFilterEl) {
+      tierFilterEl.value = currentTierFilter;
+    }
+
+    // Compound Filtering (Pair AND Tier)
+    let displayList = tradeLog;
+    if (currentPairFilter !== "ALL") {
+      displayList = displayList.filter(t => t.asset === currentPairFilter);
+    }
+    if (currentTierFilter !== "ALL") {
+      displayList = displayList.filter(t => {
+        const tier = t.tier || (t.setup && t.setup.includes("STRONG") ? "STRONG" : "BIAS");
+        return tier === currentTierFilter;
+      });
+    }
 
     if (displayList.length === 0) {
-      bodyEl.innerHTML = `<tr><td colspan="6" class="qx-empty-log">${tradeLog.length === 0 ? "Awaiting first settled candle..." : "No trades for selected pair"}</td></tr>`;
+      bodyEl.innerHTML = `<tr><td colspan="6" class="qx-empty-log">${tradeLog.length === 0 ? "Awaiting first settled candle..." : "No trades match active filters"}</td></tr>`;
       summaryEl.textContent = `0W - 0L (0%)`;
       summaryEl.style.background = "#2d3748";
       return;
@@ -889,7 +903,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.24</small>
+          <strong>QX Assistant</strong> <small>v1.4.25</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-sound-strong" class="qx-audio-btn" title="Toggle Strong Alerts (Triple Fanfare x3)">${strongSoundEnabled ? "S:🔊" : "S:🔇"}</button>
@@ -961,7 +975,7 @@
             </div>
           </div>
 
-          <!-- View 1: Forward.test Table -->
+          <!-- View 1: Forward.test Table with Dual Dropdowns (Pair & Tier) -->
           <div id="qx-view-forward" class="qx-log-table-wrap">
             <table class="qx-log-table">
               <thead>
@@ -972,7 +986,13 @@
                       <option value="ALL">Pair (All)</option>
                     </select>
                   </th>
-                  <th>Dir</th>
+                  <th>
+                    <select id="qx-log-tier-filter" class="qx-th-filter qx-th-tier-filter" title="Filter by Strong / Bias">
+                      <option value="ALL">Tier (All)</option>
+                      <option value="STRONG">[S] Strong</option>
+                      <option value="BIAS">[B] Bias</option>
+                    </select>
+                  </th>
                   <th>Entry</th>
                   <th>Exit</th>
                   <th style="text-align: right;">Result</th>
@@ -1071,9 +1091,15 @@
       runBacktestForActiveAsset();
     });
 
-    const filterEl = document.getElementById("qx-log-pair-filter");
-    filterEl.addEventListener("change", (e) => {
-      currentLogFilter = e.target.value;
+    const pairFilterEl = document.getElementById("qx-log-pair-filter");
+    pairFilterEl.addEventListener("change", (e) => {
+      currentPairFilter = e.target.value;
+      renderLogUI();
+    });
+
+    const tierFilterEl = document.getElementById("qx-log-tier-filter");
+    tierFilterEl.addEventListener("change", (e) => {
+      currentTierFilter = e.target.value;
       renderLogUI();
     });
 
@@ -1099,7 +1125,8 @@
     btnClearLog.addEventListener("click", () => {
       tradeLog = [];
       pendingTrades = [];
-      currentLogFilter = "ALL";
+      currentPairFilter = "ALL";
+      currentTierFilter = "ALL";
       saveLog(true);
       renderLogUI();
     });

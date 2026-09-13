@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.4.24",
-  "description": "Read-only assistant with Forward.test & Backward.test tabs, macOS traffic-light minimize button, styled Sync button, and persistent cache.",
+  "version": "1.4.25",
+  "description": "Read-only assistant with dual in-column filters for Pair and Strong/Bias Tier in Forward.test, Backward.test cache, and macOS traffic-light minimize.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",
