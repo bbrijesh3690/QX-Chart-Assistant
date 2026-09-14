@@ -1,6 +1,61 @@
 # Changelog
 
-## 1.4.51-harvest (Current)
+## 1.4.52-sr-reversal-scan (Current)
+Status: HYPOTHESIS TEST
+
+The classic-5pt confluence engine is **dead** — 50.3% over 4,694 decided OTC
+trades, CI [48.8–51.7], with an upper bound below even the most generous
+break-even (52.1%). No component beat 50%, and the score did not rank: the
+4.5–5.0 bucket scored *worse* than 2.5–3.0. Confirmed on real pairs at 49.6%.
+
+### Added — S/R Test button
+A new, **pre-registered** hypothesis, unrelated to the old weights: draw S/R on
+the 15m chart, drop to 1m, and take a candle that pierces a level but CLOSES
+back on the origin side (a rejection wick). Enter next 1m open, 1m expiry.
+
+This is a different claim from the engine's S/R component, which reads a 20-bar
+*1-minute* range — roughly 20 minutes of structure. Here levels come from 15m
+structure and the trigger is a candle pattern the engine has no concept of.
+
+Three level definitions, all tested: swing pivots (±2 bars), rolling 20-bar
+extremes, and prior-session high/low. Oldest two thirds train, newest third
+held out, levels rebuilt inside each slice so nothing leaks.
+
+### The null is not 50%
+Measured over 10 random walks of 40,000 bars — data with no edge by
+construction — this test returns **pivots 50.9%, rolling 51.4%, session 33.0%**.
+The bias is real rather than a bug: when price closes *through* a level there is
+no rejection candle, so the pattern structurally never books that class of
+loser. The UI shows these nulls and only colours a result green when the
+interval's **lower bound** clears its own null. Without this calibration a 52%
+would have looked like a discovery.
+
+### Guards
+- **No look-ahead.** A swing pivot is not knowable until 2 bars after it forms;
+  every level carries the earliest instant it could honestly have been used, and
+  the scan refuses to fire before it. Unit-tested explicitly.
+- **One signal per bar.** Nearby levels are often rejected by the same candle;
+  emitting one signal each would book that bar's outcome several times,
+  inflating n and falsely narrowing the interval. It is also not tradeable.
+- **Frozen-market segmentation.** Quotex keeps serving candles for real pairs
+  while FX is shut, but they are frozen (`high == low == open == close`). A
+  weekend harvest is ~100% of these and silently drags results toward the null.
+  Long runs are split out rather than hardcoding market hours, and scans never
+  bridge the gap, so settlement stays against the genuinely next minute.
+
+### Verified
+The in-extension scan is behaviourally identical to the unit-tested reference
+across three seeds × three methods (rates and sample sizes match exactly), and
+the declared nulls reproduce to 0.1pp.
+
+### First read — inconclusive, not promising
+~74 signals from 7,367 OTC bars, about one per 100 minutes. Swing pivots leaned
+above null in both train and holdout, but every interval spans 30+ points.
+Reaching ~300 signals needs roughly 30,000 bars per group. Load 15–20 assets.
+
+---
+
+## 1.4.51-harvest
 Status: DATASET
 
 ### Added — Harvest

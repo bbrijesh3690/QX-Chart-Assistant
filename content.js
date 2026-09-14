@@ -1448,6 +1448,221 @@
   }
 
   // ==============================================================
+  // 15m S/R REJECTION SCAN (v1.4.52)
+  // ==============================================================
+  // Hypothesis, pre-registered before any result was looked at:
+  // draw S/R on the 15m chart, drop to 1m, and a candle that pierces
+  // a level but CLOSES back on the origin side (a rejection wick)
+  // predicts the next 1m candle's direction.
+  //
+  // This is a different claim from the confluence engine's S/R
+  // component, which reads a 20-bar *1-minute* range — about 20
+  // minutes of structure. Here the levels come from 15m structure and
+  // the trigger is a candle pattern the engine has no concept of.
+  //
+  // THE NULL IS NOT 50%. Measured over 10 random walks of 40k bars
+  // each — data with no edge by construction — this test returns:
+  //     pivots 50.9%   rolling 51.4%   session 33.0%
+  // The bias is real rather than a bug: when price closes THROUGH a
+  // level there is no rejection candle, so the pattern structurally
+  // never books that class of loser. Any result must be read against
+  // these baselines, not against a coin flip.
+  const SR_NULL = { pivots: 50.9, rolling: 51.4, session: 33.0 };
+  const SR_MS15 = 900000;
+
+  function srAggregate15m(c1m) {
+    const map = new Map();
+    for (const c of c1m) {
+      const b = Math.floor(c.time / SR_MS15) * SR_MS15;
+      const e = map.get(b);
+      if (!e) map.set(b, { time: b, open: c.open, high: c.high, low: c.low, close: c.close });
+      else {
+        e.high = Math.max(e.high, c.high);
+        e.low = Math.min(e.low, c.low);
+        e.close = c.close;
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => a.time - b.time);
+  }
+
+  // A pivot is not knowable until k bars AFTER it forms, so every
+  // level carries the earliest instant it could honestly have been
+  // used. Skipping this manufactures an edge out of hindsight.
+  function srSwingPivots(b15, k) {
+    k = k || 2;
+    const out = [];
+    for (let p = k; p < b15.length - k; p++) {
+      let isHigh = true, isLow = true;
+      for (let j = p - k; j <= p + k; j++) {
+        if (j === p) continue;
+        if (b15[j].high >= b15[p].high) isHigh = false;
+        if (b15[j].low <= b15[p].low) isLow = false;
+      }
+      const knownFrom = b15[p + k].time + SR_MS15;
+      if (isHigh) out.push({ kind: "R", price: b15[p].high, knownFrom });
+      if (isLow) out.push({ kind: "S", price: b15[p].low, knownFrom });
+    }
+    return out;
+  }
+
+  function srRollingExtremes(b15, n) {
+    n = n || 20;
+    const out = [];
+    for (let i = n - 1; i < b15.length; i++) {
+      const w = b15.slice(i - n + 1, i + 1);
+      const knownFrom = b15[i].time + SR_MS15;
+      out.push({ kind: "R", price: Math.max.apply(null, w.map(x => x.high)), knownFrom, ttl: SR_MS15 });
+      out.push({ kind: "S", price: Math.min.apply(null, w.map(x => x.low)), knownFrom, ttl: SR_MS15 });
+    }
+    return out;
+  }
+
+  function srSessionLevels(b15) {
+    const days = new Map();
+    for (const b of b15) {
+      const d = Math.floor(b.time / 86400000) * 86400000;
+      const e = days.get(d);
+      if (!e) days.set(d, { hi: b.high, lo: b.low });
+      else { e.hi = Math.max(e.hi, b.high); e.lo = Math.min(e.lo, b.low); }
+    }
+    const keys = Array.from(days.keys()).sort((a, b) => a - b);
+    const out = [];
+    for (let i = 0; i < keys.length - 1; i++) {
+      const d = days.get(keys[i]);
+      out.push({ kind: "R", price: d.hi, knownFrom: keys[i + 1] });
+      out.push({ kind: "S", price: d.lo, knownFrom: keys[i + 1] });
+    }
+    return out;
+  }
+
+  // Quotex keeps serving candles for real pairs while the FX market is
+  // shut, but they are frozen: high == low == open == close. A weekend
+  // harvest is ~100% of these, and they silently drag any result back
+  // toward the null. Split on long runs of them rather than hardcoding
+  // market hours, and never bridge a scan across the gap — settlement
+  // must stay against the genuinely next minute.
+  function srLiveSegments(candles, maxDeadRun) {
+    maxDeadRun = maxDeadRun || 10;
+    const segs = [];
+    let cur = [], deadRun = 0;
+    for (const c of candles) {
+      const dead = (c.high === c.low);
+      if (dead) {
+        deadRun++;
+        if (deadRun >= maxDeadRun) {
+          if (cur.length > 50) segs.push(cur);
+          cur = [];
+          continue;
+        }
+      } else {
+        deadRun = 0;
+      }
+      cur.push(c);
+    }
+    if (cur.length > 50) segs.push(cur);
+    return segs;
+  }
+
+  function srScan(c1m, levels) {
+    const active = levels
+      .map(l => ({ kind: l.kind, price: l.price, knownFrom: l.knownFrom, ttl: l.ttl, broken: false, touches: 0 }))
+      .sort((a, b) => a.knownFrom - b.knownFrom);
+    const signals = [];
+
+    for (let i = 0; i < c1m.length - 1; i++) {
+      const bar = c1m[i], next = c1m[i + 1];
+      // At most ONE signal per bar. Nearby levels often get rejected by
+      // the same candle; emitting one signal each would book that single
+      // bar's outcome several times, inflating n and falsely narrowing
+      // the interval. It is also not tradeable — you take one position,
+      // not three. The level loop still runs in full so `broken` stays
+      // correct for every level.
+      let fired = false;
+      for (const lv of active) {
+        if (lv.broken || bar.time < lv.knownFrom) continue;
+        if (lv.ttl && bar.time > lv.knownFrom + lv.ttl) continue;
+
+        if (lv.kind === "R") {
+          if (bar.close > lv.price) { lv.broken = true; continue; }
+          if (bar.high >= lv.price) {
+            lv.touches++;
+            if (!fired) {
+              fired = true;
+              signals.push({ t: bar.time, dir: "PUT", touches: lv.touches, entry: next.open, exit: next.close });
+            }
+          }
+        } else {
+          if (bar.close < lv.price) { lv.broken = true; continue; }
+          if (bar.low <= lv.price) {
+            lv.touches++;
+            if (!fired) {
+              fired = true;
+              signals.push({ t: bar.time, dir: "CALL", touches: lv.touches, entry: next.open, exit: next.close });
+            }
+          }
+        }
+      }
+    }
+    return signals;
+  }
+
+  function srScore(signals) {
+    let w = 0, l = 0, t = 0;
+    for (const s of signals) {
+      if (s.exit === s.entry) { t++; continue; }
+      const up = s.exit > s.entry;
+      if ((s.dir === "CALL" && up) || (s.dir === "PUT" && !up)) w++; else l++;
+    }
+    const c = wilson(w, w + l);
+    return {
+      sig: signals.length, decided: w + l, ties: t,
+      rate: c ? Number((c.p * 100).toFixed(1)) : null,
+      lo: c ? Number((c.low * 100).toFixed(1)) : null,
+      hi: c ? Number((c.high * 100).toFixed(1)) : null
+    };
+  }
+
+  // Oldest two thirds train, newest third held out. Levels are rebuilt
+  // inside each slice so nothing leaks across the boundary.
+  function runSrReversalScan() {
+    const methods = {
+      pivots: b => srSwingPivots(b, 2),
+      rolling: b => srRollingExtremes(b, 20),
+      session: b => srSessionLevels(b)
+    };
+    const out = { OTC: {}, REAL: {}, assets: [], droppedDeadBars: 0 };
+
+    const groups = { OTC: [], REAL: [] };
+    for (const [name, data] of assetVault.entries()) {
+      const raw = (data && data.candles1m) || [];
+      if (raw.length < 200) continue;
+      const segs = srLiveSegments(raw, 10);
+      const kept = segs.reduce((a, s) => a + s.length, 0);
+      out.droppedDeadBars += raw.length - kept;
+      if (kept < 200) continue;
+      const isOtc = /\(OTC\)/i.test(name);
+      groups[isOtc ? "OTC" : "REAL"].push({ name, segs });
+      out.assets.push({ asset: name, bars: raw.length, live: kept, segments: segs.length });
+    }
+
+    for (const grp of ["OTC", "REAL"]) {
+      for (const mk of Object.keys(methods)) {
+        let train = [], hold = [];
+        for (const a of groups[grp]) {
+          for (const seg of a.segs) {
+            const cut = Math.floor(seg.length * 2 / 3);
+            const tr = seg.slice(0, cut), ho = seg.slice(cut);
+            if (tr.length > 60) train = train.concat(srScan(tr, methods[mk](srAggregate15m(tr))));
+            if (ho.length > 60) hold = hold.concat(srScan(ho, methods[mk](srAggregate15m(ho))));
+          }
+        }
+        out[grp][mk] = { train: srScore(train), holdout: srScore(hold) };
+      }
+    }
+    return out;
+  }
+
+  // ==============================================================
   // ZERO-DEPENDENCY NATIVE OPENXML (.XLSX) BUILDER
   // ==============================================================
   const crcTable = new Uint32Array(256);
@@ -2329,7 +2544,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.51 [S: v1.0]</small>
+          <strong>QX Assistant</strong> <small>v1.4.52 [S: v1.0]</small>
           <span id="qx-tel-pill" title="Signal telemetry records stored locally (click to export CSV)">
             &#9679; <span id="qx-tel-count">0</span><span id="qx-tel-settled"></span>
           </span>
@@ -2401,6 +2616,7 @@
             <div id="qx-backtest-controls" class="qx-tab-actions qx-hidden">
               <button id="qx-btn-run-bt" class="qx-bt-run-btn" title="Run Backward.test on Active Chart History">Run</button>
               <button id="qx-btn-harvest" class="qx-bt-run-btn" title="Replay ALL loaded assets into telemetry as labelled rows (source: harvest)">Harvest</button>
+              <button id="qx-btn-srtest" class="qx-bt-run-btn" title="15m S/R rejection-candle scan across all loaded assets, train/holdout split">S/R Test</button>
             </div>
           </div>
 
@@ -2517,6 +2733,73 @@
     const btnRunBt = document.getElementById("qx-btn-run-bt");
     btnRunBt.addEventListener("click", () => {
       runBacktestForActiveAsset();
+    });
+
+    const btnSrTest = document.getElementById("qx-btn-srtest");
+    btnSrTest.addEventListener("click", () => {
+      const el = document.getElementById("qx-bt-content");
+      if (!el) return;
+      const label = btnSrTest.textContent;
+      btnSrTest.textContent = "...";
+      el.innerHTML = `<div class="qx-bt-prompt">Scanning ${assetVault.size} asset(s)...</div>`;
+
+      setTimeout(() => {
+        let r;
+        try { r = runSrReversalScan(); }
+        catch (e) {
+          btnSrTest.textContent = label;
+          el.innerHTML = `<div class="qx-bt-prompt" style="color:#fca5a5;">S/R scan failed.</div>`;
+          return;
+        }
+        btnSrTest.textContent = label;
+
+        if (r.assets.length === 0) {
+          el.innerHTML = `<div class="qx-bt-prompt" style="color:#fca5a5;">
+            No asset has 200+ live bars loaded. Visit each asset tab, scroll the chart
+            back to pull history, then re-run.</div>`;
+          return;
+        }
+
+        // A result is only interesting if the interval's LOWER bound
+        // clears this test's own null — not 50%, and not the point
+        // estimate. Anything else is the bias, or noise.
+        const cell = (s, nul) => {
+          if (!s || !s.decided) return `<td style="color:#64748b;">—</td>`;
+          const beats = s.lo > nul;
+          const col = beats ? "#34d399" : (s.hi < nul ? "#f87171" : "#e2e8f0");
+          return `<td style="color:${col};white-space:nowrap;">${s.rate}%
+            <span style="color:#64748b;">[${s.lo}-${s.hi}]</span>
+            <span style="color:#475569;">n=${s.decided}</span></td>`;
+        };
+        const rowFor = (grp, mk) => `
+          <tr>
+            <td style="white-space:nowrap;"><strong>${mk}</strong>
+              <span style="color:#64748b;">null ${SR_NULL[mk]}%</span></td>
+            ${cell(r[grp][mk].train, SR_NULL[mk])}
+            ${cell(r[grp][mk].holdout, SR_NULL[mk])}
+          </tr>`;
+        const table = grp => `
+          <div style="margin-top:6px;color:#94a3b8;font-size:9.5px;"><strong>${grp}</strong></div>
+          <table class="qx-log-table">
+            <thead><tr><th>Method</th><th>Train (old 2/3)</th><th>Holdout (new 1/3)</th></tr></thead>
+            <tbody>${Object.keys(SR_NULL).map(mk => rowFor(grp, mk)).join("")}</tbody>
+          </table>`;
+
+        const totalLive = r.assets.reduce((a, x) => a + x.live, 0);
+        el.innerHTML = `
+          ${table("OTC")}
+          ${table("REAL")}
+          <div class="qx-bt-mini-footer" style="flex-direction:column;align-items:flex-start;gap:2px;">
+            <div style="color:#64748b;font-size:8.5px;">
+              ${r.assets.length} asset(s), ${totalLive} live bars${r.droppedDeadBars > 0
+                ? ` · ${r.droppedDeadBars} frozen bars dropped (market shut)` : ''}
+            </div>
+            <div style="color:#fbbf24;font-size:8.5px;">
+              ⚠ "null" is what this test returns on data with NO edge — green only when
+              the interval's lower bound beats it. Break-even is a further 52-57%.
+            </div>
+          </div>`;
+      }, 30);
     });
 
     const btnHarvest = document.getElementById("qx-btn-harvest");
