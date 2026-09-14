@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.4.62-drop-debug-global (Current)
+Status: CLEANUP
+
+Removes `window.__QX_LAST_HISTORY_META__` from `page-hook.js`. It was added in
+v1.4.53 to diagnose the history mis-attribution bug; that work is done and it
+has had no reader since.
+
+It also sat in the MAIN world, so it was one of only two things this extension
+put where the page could read it. `__QX_PAGE_HOOK__` remains as the re-entry
+guard.
+
+Attribution is unaffected: `tokens` and `prefix` still travel to content.js in
+the message payload, which is what the symbol match actually reads. Verified by
+the attribution, symbol-presence, reversed-order and ephemeral suites.
+
+---
+
 ## 1.4.58-hold-last-signal (Current)
 Status: UI
 
@@ -168,7 +185,7 @@ reversal scan. Not necessarily wrong; unproven.
 ### Fixed
 - `page-hook.js` now forwards `tokens` (every non-candle string/small integer
   in the frame) and the socket event `prefix`. Also exposes
-  `window.__QX_LAST_HISTORY_META__` for diagnosis.
+  `window.__QX_LAST_HISTORY_META__` for diagnosis (removed again in v1.4.62).
 - Attribution is now **symbol-first**: each token is checked individually so
   `EURUSD` cannot match an OTC frame, or vice versa.
 - Price fallback only when **unambiguous** — exactly one asset within 2%. If

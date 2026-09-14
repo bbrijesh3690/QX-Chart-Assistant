@@ -177,10 +177,6 @@
         historyRing.unshift(pkt);
         if (historyRing.length > 35) historyRing.pop();
 
-        // exposed read-only so attribution problems can be diagnosed
-        // without re-instrumenting the socket
-        window.__QX_LAST_HISTORY_META__ = { tokens: tokens, prefix: prefix, bars: candles.length };
-
         window.postMessage({ type: "QX_HISTORICAL_CANDLES", payload: pkt }, "*");
       }
     } catch (_) {}
