@@ -1,0 +1,19 @@
+# Build / handover artifacts — regenerable, and large binaries do not
+# belong in a public repo. This file exists mainly because `git add -A`
+# would otherwise sweep them in.
+*.zip
+
+# Exports produced by the panel
+*.xlsx
+*.csv
+
+# Editor / OS noise
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Node, if test suites are ever installed alongside
+node_modules/
+package-lock.json

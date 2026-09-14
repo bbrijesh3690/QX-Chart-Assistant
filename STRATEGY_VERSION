@@ -1,3 +1,9 @@
+STATUS=RETIRED - measured on 26,734 clean rows, no edge
+VERDICT=50.4% over 16,582 decided OTC trades, CI [49.6-51.1]; break-even 52.1-57.5%
+NOTE=score does not rank (2.5-3.0 beats 4.5-5.0), so the premise fails, not the weights
+SEE=FROZEN_LEDGER.md Milestone 10
+
+# Specification below is kept as the record of what was tested.
 STRATEGY_VERSION=v1.0.0-classic5pt
 MODEL_TYPE=5-Point Multi-Timeframe Confluence Matrix
 EVALUATION_CADENCE=250ms with :55s Lock & :58s Flip Watchdog
