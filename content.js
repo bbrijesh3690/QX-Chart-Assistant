@@ -1,7 +1,7 @@
 (function () {
-  const VAULT_KEY = "__QX_ASSET_VAULT_V32__";
-  const LOG_KEY = "__QX_SHARED_LOG_V22__";
-  const PENDING_KEY = "__QX_SHARED_PENDING_V20__";
+  const VAULT_KEY = "__QX_ASSET_VAULT_V33__";
+  const LOG_KEY = "__QX_SHARED_LOG_V23__";
+  const PENDING_KEY = "__QX_SHARED_PENDING_V21__";
 
   const assetVault = new Map();
   const globalHistoryPool = [];
@@ -14,6 +14,7 @@
   let currentPairFilter = "ALL";
   let currentTierFilter = "ALL";
   let activeTab = "FORWARD";
+  let lastLogSignature = "";
 
   function loadLog() {
     try {
@@ -45,10 +46,14 @@
     }
   });
 
-  setInterval(() => { loadLog(); if (activeTab === "FORWARD") renderLogUI(); }, 500);
+  // Polling with dirty check to avoid unnecessary DOM work
+  setInterval(() => {
+    loadLog();
+    if (activeTab === "FORWARD") renderLogUI();
+  }, 500);
 
   // ==============================================================
-  // ATOMIC CONCURRENCY ENGINE (RACE-CONDITION PROOF)
+  // ATOMIC CONCURRENCY ENGINE
   // ==============================================================
   function atomicQueuePendingTrade(newTrade) {
     try {
@@ -330,14 +335,12 @@
     return null;
   }
 
+  // OPTIMIZATION 1: Targeted Tab Scanner without document.querySelectorAll("*") layout thrashing
   function getActiveTabFromDOM() {
-    const candidateTabs = Array.from(document.querySelectorAll("*")).filter(el => {
+    const candidateTabs = Array.from(document.querySelectorAll("[class*='tab'], [class*='item']")).filter(el => {
       if (el.closest("#qx-assistant-panel")) return false;
-      const r = el.getBoundingClientRect();
-      if (r.top < 0 || r.top > 75 || r.height < 20 || r.height > 60 || r.width < 45 || r.width > 300) return false;
       const text = el.innerText || el.textContent || "";
-      const p = text.match(/\d{1,3}\s*%/g);
-      return p && p.length === 1;
+      return /\d{1,3}\s*%/.test(text) && /[A-Z]{3}/i.test(text);
     });
 
     if (candidateTabs.length === 0) return null;
@@ -352,18 +355,6 @@
       if (/(tab--active|tabs__item--active|is-active|\bactive\b|selected)/i.test(cls)) {
         score += 50;
       }
-
-      try {
-        const bg = window.getComputedStyle(tab).backgroundColor;
-        const m = bg.match(/\d+/g);
-        if (m && m.length >= 3) {
-          const lum = 0.299 * m[0] + 0.587 * m[1] + 0.114 * m[2];
-          if (lum < 22) score += 40;
-        }
-      } catch (_) {}
-
-      const hasAction = tab.querySelector("button, [class*='close'], [class*='chevron'], [class*='arrow'], [class*='dropdown'], [class*='pin']");
-      if (hasAction) score += 30;
 
       if (score > highestScore) {
         highestScore = score;
@@ -411,13 +402,13 @@
     }
   }
 
+  // Fast direct click listener (zero overhead tab switching)
   document.addEventListener("pointerdown", (e) => {
     if (e.target.closest("#qx-assistant-panel")) return;
     let el = e.target;
-    for (let i = 0; i < 6 && el && el !== document.body; i++) {
-      const r = el.getBoundingClientRect();
-      if (r.width <= 300) {
-        const text = el.innerText || el.textContent || "";
+    for (let i = 0; i < 4 && el && el !== document.body; i++) {
+      const text = el.innerText || el.textContent || "";
+      if (text.length < 35 && /[A-Z]{3}/i.test(text)) {
         const parsed = formatCleanName(text);
         if (parsed) {
           switchAsset(parsed);
@@ -428,34 +419,17 @@
     }
   }, true);
 
-  let observerDebounce = null;
-  const observer = new MutationObserver(() => {
-    clearTimeout(observerDebounce);
-    observerDebounce = setTimeout(() => {
-      const found = getActiveTabFromDOM();
-      if (found && found !== activeAsset) {
-        switchAsset(found);
-      }
-    }, 30);
-  });
-
-  observer.observe(document.documentElement, {
-    childList: true,
-    subtree: true,
-    attributes: true,
-    attributeFilter: ["class", "aria-selected"]
-  });
-
+  // OPTIMIZATION 2: Replaced heavy MutationObserver with gentle 1.5s idle check
   setInterval(() => {
     const found = getActiveTabFromDOM();
     if (found && found !== activeAsset) {
       switchAsset(found);
     }
-  }, 350);
+  }, 1500);
 
-  // ==========================================
-  // CANDLE INGESTION & SETTLEMENT
-  // ==========================================
+  // ==============================================================
+  // OPTIMIZATION 3: FAST TICK INGESTION (DECOUPLED FROM MATRIX MATH)
+  // ==============================================================
   function ingestFastTick(price, rawText, decimals, time) {
     if (activeAsset === "Detecting...") {
       const found = getActiveTabFromDOM();
@@ -513,9 +487,9 @@
       saveVault();
     }
 
+    // Direct, cheap DOM update for the price text (virtually 0% CPU)
     const priceEl = document.getElementById("qx-ui-price");
     if (priceEl) priceEl.textContent = state.rawPrice || price.toFixed(state.decimals);
-    updateAnalysis();
   }
 
   function ingestHistory(candles, samplePrice) {
@@ -1310,7 +1284,6 @@
   <sheetData>${s2RowsXml}</sheetData>
 </worksheet>`;
 
-    // OpenXML Package Structure
     const files = [
       {
         name: "[Content_Types].xml",
@@ -1532,15 +1505,20 @@
     `;
   }
 
-  // ==========================================
-  // RENDER FORWARD.TEST LOG WITH DUAL FILTERS
-  // ==========================================
+  // ==============================================================
+  // OPTIMIZATION 4: DIRTY-CHECKED RENDER LOG (ZERO EXCESSIVE DOM CYCLES)
+  // ==============================================================
   function renderLogUI() {
     const bodyEl = document.getElementById("qx-log-body");
     const summaryEl = document.getElementById("qx-log-summary");
     const pairFilterEl = document.getElementById("qx-log-pair-filter");
     const tierFilterEl = document.getElementById("qx-log-tier-filter");
     if (!bodyEl || !summaryEl) return;
+
+    // Fast signature dirty-check: avoids completely destroying and re-rendering HTML
+    const sig = `${tradeLog.length}_${tradeLog[0]?.id || ''}_${tradeLog[0]?.outcome || ''}_${currentPairFilter}_${currentTierFilter}`;
+    if (sig === lastLogSignature) return;
+    lastLogSignature = sig;
 
     if (pairFilterEl) {
       const distinctPairs = Array.from(new Set(tradeLog.map(t => t.asset))).filter(Boolean);
@@ -1589,8 +1567,9 @@
 
     const totalDecided = wins + losses;
     const wr = totalDecided > 0 ? ((wins / totalDecided) * 100).toFixed(0) : 0;
+    const totalCount = wins + losses + ties;
 
-    const totalCount = wins + losses + ties; summaryEl.textContent = ties > 0 ? `${totalCount}T: ${wins}W - ${losses}L (${ties}T) (${wr}%)` : `${totalCount}T: ${wins}W - ${losses}L (${wr}%)`;
+    summaryEl.textContent = ties > 0 ? `${totalCount}T: ${wins}W - ${losses}L (${ties}T) (${wr}%)` : `${totalCount}T: ${wins}W - ${losses}L (${wr}%)`;
     summaryEl.style.background = wr >= 65 ? "#065f46" : (wr >= 50 ? "#2d3748" : "#7f1d1d");
 
     let rowsHtml = "";
@@ -1640,7 +1619,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.38</small>
+          <strong>QX Assistant</strong> <small>v1.4.39</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-sound-strong" class="qx-audio-btn" title="Toggle Strong Alerts (Triple Fanfare x3)">${strongSoundEnabled ? "S:🔊" : "S:🔇"}</button>
@@ -1704,7 +1683,7 @@
               <button id="qx-tab-btn-backtest" class="qx-tab-btn">Backward.test</button>
             </div>
             <div id="qx-forward-controls" class="qx-tab-actions">
-              <span id="qx-log-summary" class="qx-log-pill">0W - 0L (0%)</span>
+              <span id="qx-log-summary" class="qx-log-pill">0T: 0W - 0L (0%)</span>
               <button id="qx-btn-export-log" class="qx-export-btn" title="Export Dashboard Style Native .xlsx Workbook">Export</button>
               <button id="qx-btn-clear-log" class="qx-clear-btn" title="Reset Shared Session Log Across Windows">Clr</button>
             </div>
@@ -1810,6 +1789,7 @@
       viewBacktest.classList.add("qx-hidden");
       controlsForward.classList.remove("qx-hidden");
       controlsBacktest.classList.add("qx-hidden");
+      lastLogSignature = "";
       renderLogUI();
     });
 
@@ -1837,12 +1817,14 @@
     const pairFilterEl = document.getElementById("qx-log-pair-filter");
     pairFilterEl.addEventListener("change", (e) => {
       currentPairFilter = e.target.value;
+      lastLogSignature = "";
       renderLogUI();
     });
 
     const tierFilterEl = document.getElementById("qx-log-tier-filter");
     tierFilterEl.addEventListener("change", (e) => {
       currentTierFilter = e.target.value;
+      lastLogSignature = "";
       renderLogUI();
     });
 
@@ -1870,6 +1852,7 @@
       pendingTrades = [];
       currentPairFilter = "ALL";
       currentTierFilter = "ALL";
+      lastLogSignature = "";
       localStorage.setItem(LOG_KEY, JSON.stringify([]));
       localStorage.setItem(PENDING_KEY, JSON.stringify([]));
       if (syncChannel) syncChannel.postMessage({ type: "QX_SYNC_LOG_UPDATE" });
@@ -1911,7 +1894,7 @@
   }, 400);
 
   // ==============================================================
-  // ANALYSIS & FLIP GATE & SIGNAL LOCK
+  // ANALYSIS, FLIP GATE & SIGNAL LOCK (STEADY 250MS CADENCE)
   // ==============================================================
   function updateAnalysis() {
     const dec = state.decimals !== undefined ? state.decimals : 3;
@@ -2080,6 +2063,7 @@
     }
   }
 
+  // Steady 250ms cadence (4x/sec instead of 30x/sec on micro-ticks)
   setInterval(updateAnalysis, 250);
 
   function updateUI() {

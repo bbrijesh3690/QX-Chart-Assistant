@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.4.38",
-  "description": "Read-only assistant with hardened dual-channel sync, active polling reconciliation, and executive .xlsx dashboard export.",
+  "version": "1.4.39",
+  "description": "High-performance assistant with zero layout thrashing, dirty-checked DOM sync, low CPU/RAM footprint, and executive .xlsx dashboard export.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",
