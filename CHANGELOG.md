@@ -1,6 +1,42 @@
 # Changelog
 
-## 1.4.48-log-integrity (Current)
+## 1.4.49-persistent-log (Current)
+Status: FIX
+
+### Fixed — the forward log reset on every browser relaunch
+A heartbeat is written every 2s while a Quotex tab is open. On boot, a
+heartbeat older than 15s was treated as a relaunch and the settled trade log
+was **deleted** along with the vault and pending trades. Closing the browser
+and reopening it therefore discarded the entire forward record, which made it
+impossible to accumulate the few hundred settled trades the decision gate
+needs — you would have restarted from zero every session, permanently.
+
+The settled log now survives a relaunch. The asset vault and pending trades
+still reset, because both reference candle series that are stale the moment
+the browser closes and a pending trade whose candle is gone can never settle.
+
+Those orphaned pending trades are now **counted** into the expired tally
+rather than dropped silently, consistent with v1.4.48 — a log that quietly
+loses trades reads as complete when it is not.
+
+Verified against the real boot block: log survives a 60s-stale heartbeat,
+orphaned pending are counted, vault clears, nothing resets on a 3s heartbeat,
+and the log accumulates across repeated relaunches.
+
+### Note — telemetry was never affected
+`telemetry.js` is IndexedDB and the boot reset never touched it; it is cleared
+only by an explicit `__QX_TELEMETRY__.wipe("YES")`. It remains the durable
+record and the instrument the decision gate should be computed from.
+
+### Known limits (unchanged)
+- The visible log is capped at the 1000 most recent settled trades. Telemetry
+  holds everything; the cap is a UI bound, not a data bound.
+- `loadLog()` re-parses the full log from localStorage on a 500ms poll, which
+  is wasteful at large log sizes. Pre-existing; not addressed here.
+
+---
+
+## 1.4.48-log-integrity
 Status: FIX
 
 ### Fixed — forward log was silently losing trades

@@ -5,10 +5,27 @@
   const EXPIRED_KEY = "__QX_SHARED_EXPIRED_COUNT__";
   const HEARTBEAT_KEY = "__QX_SESSION_HEARTBEAT__";
 
-  // Enforce session fresh-start on browser relaunch
+  // Boot-time session reset, on a stale heartbeat (no Quotex tab open
+  // for >15s — i.e. a browser relaunch).
+  //
+  // The asset vault holds candle series that are stale the moment the
+  // browser closes, and any pending trade references a minute whose
+  // candle is now gone, so neither can survive. The SETTLED trade log
+  // does survive: until v1.4.49 it was wiped here too, which meant the
+  // forward record reset on every relaunch and could never accumulate
+  // the few hundred settled trades the decision gate needs.
   const lastHb = parseInt(localStorage.getItem(HEARTBEAT_KEY) || "0", 10);
   if (Date.now() - lastHb > 15000) {
-    localStorage.removeItem(LOG_KEY);
+    // Pending trades die with the candles they would have settled
+    // against. Count them instead of dropping them silently — a log
+    // that quietly loses trades reads as complete when it is not.
+    try {
+      const orphaned = JSON.parse(localStorage.getItem(PENDING_KEY) || "[]");
+      if (Array.isArray(orphaned) && orphaned.length > 0) {
+        const prev = parseInt(localStorage.getItem(EXPIRED_KEY) || "0", 10) || 0;
+        localStorage.setItem(EXPIRED_KEY, String(prev + orphaned.length));
+      }
+    } catch (_) {}
     localStorage.removeItem(PENDING_KEY);
     sessionStorage.clear();
   }
@@ -1982,7 +1999,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.48 [S: v1.0]</small>
+          <strong>QX Assistant</strong> <small>v1.4.49 [S: v1.0]</small>
           <span id="qx-tel-pill" title="Signal telemetry records stored locally (click to export CSV)">
             &#9679; <span id="qx-tel-count">0</span><span id="qx-tel-settled"></span>
           </span>
