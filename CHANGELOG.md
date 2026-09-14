@@ -17,7 +17,75 @@ the attribution, symbol-presence, reversed-order and ephemeral suites.
 
 ---
 
-## 1.4.58-hold-last-signal (Current)
+## 1.4.61-db-heal
+Status: FIX
+
+A `QX_TELEMETRY` database can exist at version 1 with **no object store** — any
+bare `indexedDB.open()` by name creates exactly that, which is what a diagnostic
+open did here. Since `DB_VERSION` is also 1, `onupgradeneeded` never fires,
+every transaction throws `NotFoundError`, and telemetry is **silently and
+permanently dead with no visible symptom**.
+
+`openDb` now checks for the store after opening and, if missing, reopens one
+version higher so the upgrade path recreates it. Verified against a real
+IndexedDB implementation (`fake-indexeddb`): broken state reproduced, then
+`record()` and `count()` both work and the store is rebuilt at v2.
+
+---
+
+## 1.4.60-ephemeral
+Status: FIX
+
+Reverts v1.4.49, which had made the settled trade log survive a relaunch so the
+decision gate could accumulate trades. The gate has been run and the strategy
+retired, so the original requirement applies again: **nothing this extension
+records outlives the browser session.**
+
+On a stale heartbeat — no Quotex tab open for >15s — the trade log, pending
+trades, expired counter and asset vault are cleared, and the telemetry store is
+emptied on first open. Panel position and the two sound toggles are kept, being
+preferences rather than records.
+
+This matters because `localStorage` and IndexedDB are scoped to the **Quotex
+origin**, not the extension: while that data exists, any script on qxbroker.com
+can read it. 31 MB had accumulated there. Verified after a real browser restart:
+origin usage **31.24 MB → 0.019 MB**, trade log empty.
+
+### The store is cleared, not deleted
+`deleteDatabase()` needs exclusive access. With a connection open it blocks, and
+every later `open()` queues behind it — **observed freezing a tab's renderer
+outright**. Two tabs booting together after a relaunch would hit this. `clear()`
+runs in an ordinary transaction, cannot block, and removes the rows just as
+completely. An empty database file is not the thing that matters.
+
+---
+
+## 1.4.59-slim-panel
+Status: UI
+
+Removes the telemetry pill, **Harvest** and **S/R Test** from the panel. The
+Backward.test toolbar is now just **Run**; the header is just the version. Click
+handlers and the 15s pill refresh went too, so no listeners poll for elements
+that no longer exist.
+
+Telemetry collection is unchanged — only its counter display is gone.
+
+The rig behind those buttons is the durable result of this project, so it is
+kept reachable rather than deleted, on `__QX_TOOLS__` in the ISOLATED world:
+
+```js
+__QX_TOOLS__.harvest().then(console.log)
+__QX_TOOLS__.srScan()
+__QX_TOOLS__.attribution()
+```
+
+These are `undefined` in the page console — the DevTools context must be
+switched to the extension, the same gotcha that made the documented wipe command
+silently fail in v1.4.54.
+
+---
+
+## 1.4.58-hold-last-signal
 Status: UI
 
 Display only — no change to scoring, the `:55` lock, the `:58` flip gate, trade
