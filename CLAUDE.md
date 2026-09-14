@@ -75,7 +75,25 @@ carry signal. Changing them before measuring destroys the only baseline we have.
   `v1.4.44-telemetry` before starting new work.
 - `TELEMETRY_SCHEMA.md` documents all 63 telemetry columns and the analysis plan.
 
-## Next task — harvest function (v1.4.45)
+## Harvest — DONE in v1.4.51
+
+Shipped as the **Harvest** button in the Backward.test tab. Walks the whole
+`assetVault`, replays each asset's `candles1m` through the same
+`evaluateConfluence` and indicator functions the live path uses, and bulk-writes
+one already-settled telemetry row per bar via `recordBulk`.
+
+Every row is tagged `source: "harvest"` and carries `matchDist`. Harvested rows
+have `payout`/`breakEven` null (today's payout never applied to an old bar), all
+tick microstructure null, and `flipped` null. Their ids are prefixed `h_` so
+they can never collide with a live row for the same minute — both may exist, and
+`source` is what keeps them apart. **Always filter on `source`; never pool.**
+
+Verified: schema parity with the live row, correct settlement against the next
+bar, and zero scoring drift — every row reproduces a full-history recompute.
+
+The original spec follows, for context on why it is shaped this way.
+
+### Original spec
 
 Goal: get a labeled dataset today instead of waiting weeks for live collection.
 

@@ -800,7 +800,15 @@
     globalHistoryPool.unshift({ candles: candles, samplePrice: samplePrice });
     if (globalHistoryPool.length > 35) globalHistoryPool.pop();
 
+    // The 0.25 band is wide — EUR/USD at 1.08 and GBP/USD at 1.26 are
+    // only 17% apart, so history can be filed under the wrong asset.
+    // Do not tighten it: the canvas-scraped price can be briefly stale
+    // and a narrow band would break hydration. Instead record HOW FAR
+    // off each match was, so a bad attribution stays filterable in
+    // analysis rather than silently poisoning a row.
     if (state.livePrice !== null && Math.abs(samplePrice - state.livePrice) / state.livePrice <= 0.25) {
+      const dist = Math.abs(samplePrice - state.livePrice) / state.livePrice;
+      state.matchDist = Math.max(state.matchDist || 0, Number(dist.toFixed(6)));
       state.candles1m = mergeCandleArrays(state.candles1m, candles);
       reconcilePendingTrades(activeAsset, state.candles1m, state.currentCandle?.time);
       saveVault();
@@ -810,6 +818,8 @@
 
     for (const [name, data] of assetVault.entries()) {
       if (data.livePrice !== null && Math.abs(samplePrice - data.livePrice) / data.livePrice <= 0.25) {
+        const dist = Math.abs(samplePrice - data.livePrice) / data.livePrice;
+        data.matchDist = Math.max(data.matchDist || 0, Number(dist.toFixed(6)));
         data.candles1m = mergeCandleArrays(data.candles1m, candles);
         reconcilePendingTrades(name, data.candles1m, data.currentCandle?.time);
         saveVault();
@@ -1166,6 +1176,275 @@
       maxWinStreak, maxLossStreak, skippedNeutral,
       spanHours, missingBars
     };
+  }
+
+  // ==============================================================
+  // HARVEST (v1.4.51)
+  // ==============================================================
+  // Replays every asset's loaded history through the SAME
+  // evaluateConfluence and the SAME indicator functions the live path
+  // uses, writing one telemetry row per bar. The point is to have a
+  // labeled dataset today instead of waiting weeks for live ticks.
+  //
+  // Harvested rows are NOT interchangeable with live rows and are
+  // tagged source:"harvest" so nothing can pool them by accident:
+  //   - no tick microstructure — the canvas stream is not replayable
+  //   - no flip gate — that needs sub-minute data history does not have
+  //   - no payout — today's payout did not apply to a bar from 30h ago,
+  //     so recording it would be fabrication
+  //   - scored on a fully CLOSED bar, where live locks at :55 on a
+  //     partially formed one
+  //
+  // They arrive already settled: the bar that resolves each one is
+  // sitting in the history immediately after it.
+  function buildHarvestRows(assetName, data) {
+    const candles = data && data.candles1m;
+    if (!candles || candles.length < 25) return [];
+
+    const RSI_PERIOD = 14;
+    const AGG_WINDOW = 60;
+    const warmup = 20;
+
+    const decimals = data.decimals !== undefined ? data.decimals : 3;
+    const matchDist = data.matchDist !== undefined ? data.matchDist : null;
+    const isOtc = /\(OTC\)/i.test(assetName) ? 1 : 0;
+    const harvestedAt = Date.now();
+    const rows = [];
+
+    // Running distinct-bucket counts, so count5m/count15m mean the same
+    // "how much data did this evaluation have" they do live, rather
+    // than the size of the rolling window used for speed.
+    let last5 = null, last15 = null, count5 = 0, count15 = 0;
+    const tallyBuckets = (c) => {
+      const b5 = Math.floor(c.time / 300000) * 300000;
+      if (b5 !== last5) { count5++; last5 = b5; }
+      const b15 = Math.floor(c.time / 900000) * 900000;
+      if (b15 !== last15) { count15++; last15 = b15; }
+    };
+    for (let k = 0; k < warmup; k++) tallyBuckets(candles[k]);
+
+    let avgGain = 0, avgLoss = 0;
+    for (let k = 1; k <= RSI_PERIOD; k++) {
+      const d = candles[k].close - candles[k - 1].close;
+      if (d >= 0) avgGain += d; else avgLoss += Math.abs(d);
+    }
+    avgGain /= RSI_PERIOD;
+    avgLoss /= RSI_PERIOD;
+    for (let k = RSI_PERIOD + 1; k <= warmup; k++) {
+      const d = candles[k].close - candles[k - 1].close;
+      avgGain = (avgGain * (RSI_PERIOD - 1) + (d >= 0 ? d : 0)) / RSI_PERIOD;
+      avgLoss = (avgLoss * (RSI_PERIOD - 1) + (d < 0 ? Math.abs(d) : 0)) / RSI_PERIOD;
+    }
+    // RSI through the bar BEFORE the first evaluated one — the shadow
+    // "excluding the forming bar" reading, same as live's rsiClosed.
+    let prevRsi = calcRSI(candles.slice(0, warmup), RSI_PERIOD);
+
+    for (let i = warmup; i < candles.length - 1; i++) {
+      const cur = candles[i];
+      const next = candles[i + 1];
+      tallyBuckets(cur);
+
+      const aggWindow = candles.slice(Math.max(0, i - AGG_WINDOW + 1), i + 1);
+      const m5List = getAggregate(aggWindow, null, 5);
+      const m15List = getAggregate(aggWindow, null, 15);
+      const sr = calcSR(candles.slice(Math.max(0, i - 19), i + 1));
+      const rsi = avgLoss === 0 ? 100 : 100 - (100 / (1 + (avgGain / avgLoss)));
+
+      let trend15 = "Neutral";
+      if (m15List.length >= 1) {
+        const b = m15List[m15List.length - 1];
+        trend15 = b.close >= b.open ? "Bullish" : "Bearish";
+      }
+      let trend5 = "Neutral";
+      if (m5List.length >= 2) {
+        const c5 = m5List[m5List.length - 1];
+        const p5 = m5List[m5List.length - 2];
+        trend5 = c5.close >= p5.close ? "Bullish" : "Bearish";
+      }
+
+      const verdict = evaluateConfluence(trend15, trend5, rsi, cur.close, sr);
+
+      // --- shadow features, mirroring captureTelemetry but anchored to
+      // this bar's own clock rather than Date.now()
+      const block15 = Math.floor(cur.time / 900000) * 900000;
+      const closed15 = m15List.filter(b => b.time < block15);
+      let trend15Closed = "Neutral";
+      if (closed15.length >= 1) {
+        const b = closed15[closed15.length - 1];
+        trend15Closed = b.close >= b.open ? "Bullish" : "Bearish";
+      }
+      const block5 = Math.floor(cur.time / 300000) * 300000;
+      const closed5 = m5List.filter(b => b.time < block5);
+      let trend5Closed = "Neutral";
+      if (closed5.length >= 2) {
+        const c5 = closed5[closed5.length - 1];
+        const p5 = closed5[closed5.length - 2];
+        trend5Closed = c5.close >= p5.close ? "Bullish" : "Bearish";
+      }
+
+      let distSupPrice = null, distResPrice = null, distSupWick = null, distResWick = null;
+      if (sr.s !== null && sr.r !== null) {
+        const range = sr.r - sr.s;
+        if (range > 0) {
+          distSupPrice = Number(((cur.close - sr.s) / range).toFixed(6));
+          distResPrice = Number(((sr.r - cur.close) / range).toFixed(6));
+          distSupWick = Number(((cur.low - sr.s) / range).toFixed(6));
+          distResWick = Number(((sr.r - cur.high) / range).toFixed(6));
+        }
+      }
+
+      // ATR / stdev / gaps exclude the evaluated bar, as they do live
+      // (live computes them over the candles behind the forming one).
+      const behind = candles.slice(Math.max(0, i - 40), i);
+      const atr = calcATR(behind, 14);
+      const sd = calcStdev(behind, 20);
+
+      const d = new Date(cur.time);
+      const tradeMinute = cur.time + 60000;
+
+      rows.push({
+        // h_ prefix guarantees a harvested row can never collide with
+        // a live row for the same minute. Both may exist; `source`
+        // keeps them apart.
+        id: `h_${assetName}_${tradeMinute}`,
+        asset: assetName,
+        isOtc,
+        decimals,
+
+        evalTs: cur.time + 60000,
+        evalMinute: cur.time,
+        tradeMinute,
+        localHour: d.getHours(),
+        localMinute: d.getMinutes(),
+        minuteOfDay: d.getHours() * 60 + d.getMinutes(),
+        dayOfWeek: d.getDay(),
+        utcHour: d.getUTCHours(),
+
+        lockPrice: cur.close,
+        dir: verdict.dir,
+        tier: verdict.tier,
+        setup: verdict.setup,
+        score: verdict.score,
+        rawCall: verdict.rawCall,
+        rawPut: verdict.rawPut,
+
+        trend15, trend5,
+        rsi: rsi !== null ? Number(rsi.toFixed(4)) : null,
+        srS: sr.s,
+        srR: sr.r,
+        srRange: (sr.s !== null && sr.r !== null) ? Number((sr.r - sr.s).toFixed(8)) : null,
+        distSupPrice, distResPrice,
+
+        trend15Closed, trend5Closed,
+        rsiClosed: prevRsi !== null ? Number(prevRsi.toFixed(4)) : null,
+        distSupWick, distResWick,
+        m15BlockPos: Math.floor((cur.time % 900000) / 60000),
+        m15BarsClosed: closed15.length,
+
+        atr14: atr !== null ? Number(atr.toFixed(8)) : null,
+        atrPct: (atr !== null && cur.close) ? Number(((atr / cur.close) * 100).toFixed(6)) : null,
+        stdev20: sd !== null ? Number(sd.toFixed(10)) : null,
+        stdev20Pct: sd !== null ? Number((sd * 100).toFixed(6)) : null,
+
+        count1m: i + 1,
+        count5m: count5,
+        count15m: count15,
+        gapCount20: countGaps(candles.slice(Math.max(0, i - 20), i), 20),
+        staleMs: null,
+
+        // No replayable tick stream in history.
+        tick5s: null, tick10s: null, tick60s: null,
+        tickUp10s: null, tickDown10s: null, tickImb10s: null,
+        range5s: null, range60s: null, range5sPct: null,
+
+        flipped: null,
+        executed: null,
+        settled: 1,
+        entryTick: null,
+        entryOpen: next.open,
+        exitClose: next.close,
+        nextHigh: next.high,
+        nextLow: next.low,
+        nextDir: next.close > next.open ? "UP" : (next.close < next.open ? "DOWN" : "FLAT"),
+        resolvedTs: harvestedAt,
+
+        // Today's payout did not apply to this bar. Analysis must
+        // supply its own assumption rather than inherit a wrong one.
+        payout: null,
+        breakEven: null,
+
+        source: "harvest",
+        matchDist
+      });
+
+      prevRsi = rsi;
+
+      const nd = next.close - cur.close;
+      avgGain = (avgGain * (RSI_PERIOD - 1) + (nd >= 0 ? nd : 0)) / RSI_PERIOD;
+      avgLoss = (avgLoss * (RSI_PERIOD - 1) + (nd < 0 ? Math.abs(nd) : 0)) / RSI_PERIOD;
+    }
+
+    return rows;
+  }
+
+  function yieldToUi() {
+    return new Promise(resolve => setTimeout(resolve, 0));
+  }
+
+  function writeInChunks(tel, rows, chunkSize) {
+    let i = 0, written = 0;
+    function next() {
+      if (i >= rows.length) return Promise.resolve(written);
+      const chunk = rows.slice(i, i + chunkSize);
+      i += chunkSize;
+      return tel.recordBulk(chunk)
+        .then(n => { written += n; })
+        .then(yieldToUi)
+        .then(next);
+    }
+    return next();
+  }
+
+  // Walks the WHOLE vault, not just the active asset. Yields to the UI
+  // between assets and between write chunks so the panel stays alive.
+  function runHarvest(onProgress) {
+    const tel = TEL();
+    if (!tel || typeof tel.recordBulk !== "function") {
+      return Promise.resolve({ error: "Telemetry layer unavailable." });
+    }
+
+    const entries = Array.from(assetVault.entries());
+    const summary = { assetsHarvested: 0, rowsBuilt: 0, rowsWritten: 0, skipped: [], total: entries.length };
+    let idx = 0;
+
+    function step() {
+      if (idx >= entries.length) return Promise.resolve(summary);
+      const [name, data] = entries[idx++];
+      let rows = [];
+      try {
+        rows = buildHarvestRows(name, data);
+      } catch (_) {
+        rows = [];
+      }
+
+      if (rows.length === 0) {
+        const n = (data && data.candles1m) ? data.candles1m.length : 0;
+        summary.skipped.push(`${name} (${n} bars)`);
+        if (onProgress) onProgress(Object.assign({ current: name, done: idx }, summary));
+        return yieldToUi().then(step);
+      }
+
+      summary.assetsHarvested++;
+      summary.rowsBuilt += rows.length;
+      if (onProgress) onProgress(Object.assign({ current: name, done: idx }, summary));
+
+      return writeInChunks(tel, rows, 400).then(n => {
+        summary.rowsWritten += n;
+        return yieldToUi().then(step);
+      });
+    }
+
+    return step();
   }
 
   // ==============================================================
@@ -2050,7 +2329,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.50 [S: v1.0]</small>
+          <strong>QX Assistant</strong> <small>v1.4.51 [S: v1.0]</small>
           <span id="qx-tel-pill" title="Signal telemetry records stored locally (click to export CSV)">
             &#9679; <span id="qx-tel-count">0</span><span id="qx-tel-settled"></span>
           </span>
@@ -2121,6 +2400,7 @@
             </div>
             <div id="qx-backtest-controls" class="qx-tab-actions qx-hidden">
               <button id="qx-btn-run-bt" class="qx-bt-run-btn" title="Run Backward.test on Active Chart History">Run</button>
+              <button id="qx-btn-harvest" class="qx-bt-run-btn" title="Replay ALL loaded assets into telemetry as labelled rows (source: harvest)">Harvest</button>
             </div>
           </div>
 
@@ -2237,6 +2517,57 @@
     const btnRunBt = document.getElementById("qx-btn-run-bt");
     btnRunBt.addEventListener("click", () => {
       runBacktestForActiveAsset();
+    });
+
+    const btnHarvest = document.getElementById("qx-btn-harvest");
+    let harvestRunning = false;
+    btnHarvest.addEventListener("click", () => {
+      if (harvestRunning) return;
+      harvestRunning = true;
+      const btContainer = document.getElementById("qx-bt-content");
+      const label = btnHarvest.textContent;
+      btnHarvest.textContent = "...";
+
+      const render = (html) => { if (btContainer) btContainer.innerHTML = html; };
+      render(`<div class="qx-bt-prompt">Harvesting ${assetVault.size} asset(s)...</div>`);
+
+      runHarvest(p => {
+        render(`
+          <div class="qx-bt-prompt" style="text-align: left;">
+            Harvesting <strong>${p.current}</strong> (${p.done}/${p.total})<br>
+            <span style="color: #64748b; font-size: 9.5px;">
+              ${p.rowsBuilt} rows built, ${p.rowsWritten} written
+            </span>
+          </div>
+        `);
+      }).then(s => {
+        harvestRunning = false;
+        btnHarvest.textContent = label;
+        if (s.error) {
+          render(`<div class="qx-bt-prompt" style="color: #fca5a5;">${s.error}</div>`);
+          return;
+        }
+        const dupes = s.rowsBuilt - s.rowsWritten;
+        render(`
+          <div class="qx-bt-prompt" style="text-align: left;">
+            <strong style="color: #34d399;">Harvest complete.</strong><br>
+            <span style="color: #94a3b8; font-size: 9.5px;">
+              ${s.rowsWritten} rows written from ${s.assetsHarvested} asset(s).
+              ${dupes > 0 ? `${dupes} already present, skipped.` : ''}
+            </span><br>
+            ${s.skipped.length > 0 ? `<span style="color: #64748b; font-size: 8.5px;">Skipped (need 25+ bars): ${s.skipped.join(', ')}</span><br>` : ''}
+            <span style="color: #fbbf24; font-size: 8.5px;">
+              Tagged source:"harvest" — no ticks, no flip gate, no payout, and
+              scored on a fully closed bar. Filter on source; never pool with live.
+            </span>
+          </div>
+        `);
+        refreshTelemetryPill();
+      }).catch(() => {
+        harvestRunning = false;
+        btnHarvest.textContent = label;
+        render(`<div class="qx-bt-prompt" style="color: #fca5a5;">Harvest failed.</div>`);
+      });
     });
 
     const btnExport = document.getElementById("qx-btn-export-log");
@@ -2505,7 +2836,10 @@
         // always carries the bar it had to clear, even if the payout
         // scrape later breaks or the tab markup changes again.
         payout: activeTabPayout,
-        breakEven: activeTabPayout ? Number((1 / (1 + activeTabPayout)).toFixed(6)) : null
+        breakEven: activeTabPayout ? Number((1 / (1 + activeTabPayout)).toFixed(6)) : null,
+
+        source: "live",
+        matchDist: state.matchDist !== undefined ? state.matchDist : null
       };
 
       tel.record(row).then(ok => {

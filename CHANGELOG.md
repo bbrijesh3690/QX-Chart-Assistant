@@ -1,6 +1,54 @@
 # Changelog
 
-## 1.4.50-payout-aware (Current)
+## 1.4.51-harvest (Current)
+Status: DATASET
+
+### Added — Harvest
+A **Harvest** button in the Backward.test tab. Walks the whole `assetVault`
+rather than just the active asset, replays each asset's `candles1m` through the
+**same** `evaluateConfluence` and indicator functions the live path uses, and
+bulk-writes one already-settled telemetry row per bar. Turns weeks of waiting
+for live collection into one click over history already sitting in memory.
+
+Rows arrive settled because the bar that resolves each one is right there in the
+history: `entryOpen`/`exitClose`/`nextHigh`/`nextLow`/`nextDir` from the next bar.
+
+### Harvested rows are deliberately not live rows
+Tagged `source: "harvest"`, with ids prefixed `h_` so they can never collide
+with a live row for the same minute. Both may exist; `source` keeps them apart.
+**Filter on it — never pool.** Harvested rows have:
+
+- no tick microstructure — the canvas stream is not replayable
+- no flip gate — that needs sub-minute data history does not contain
+- no payout — today's payout never applied to a bar from 30 hours ago, so
+  recording one would be fabrication. Analysis must supply its own assumption.
+- a fully **closed** bar scored, where live locks at `:55` on a partial one
+
+### Added — plumbing
+- `recordBulk(rows)` in `telemetry.js`: many rows in one transaction, preserving
+  each row's own `settled` flag, and using `add()` so an existing row is never
+  overwritten — a live row must always win a collision.
+- `source` and `matchDist` columns, **appended** at the end of `COLUMNS`
+  (never reordered). `SCHEMA_VERSION` → 3.
+- `matchDist` is now recorded when `ingestHistory` attributes history to an
+  asset by price proximity. The 25% band is wide enough to file GBP/USD under
+  EUR/USD; the band is deliberately left alone, but the distance is now stored
+  so a bad attribution is filterable after the fact instead of silently
+  poisoning rows.
+- Live rows now carry `source: "live"`.
+
+### Verified
+Schema parity with the live row (no missing or stray fields), correct bounds
+(20-bar warmup, final bar unevaluated), correct settlement against the next bar,
+correct null-labelling of every live-only column, behaviour on gappy history,
+guards on short/missing input — and **zero scoring drift**: all 479 rows in the
+test reproduce a full-history recompute exactly. On a random walk the harvest
+returns 50.4%, i.e. it does not manufacture an edge the way the pre-v1.4.46
+backtester did.
+
+---
+
+## 1.4.50-payout-aware
 Status: MEASUREMENT
 
 ### The decision gate was calibrated to the wrong number

@@ -59,10 +59,23 @@
     //     0.92 -> 52.1%, 0.77 -> 56.5%. A 53% hit rate is profitable
     //     on one asset and loss-making on another, which is why this
     //     has to be stored per row rather than assumed.
-    "payout", "breakEven"
+    "payout", "breakEven",
+    // --- v1.4.51: appended, never reordered -----------------------
+    //     source is "live" for rows captured at a real :55 lock and
+    //     "harvest" for rows replayed out of loaded history. NEVER
+    //     pool them: harvested rows have no tick microstructure, no
+    //     flip-gate behaviour and no payout, and they score a fully
+    //     closed bar where live scores a partial one. Always filter.
+    //
+    //     matchDist is how far off the price-proximity match was when
+    //     that asset's history was attributed to it (0.17 = 17%).
+    //     ingestHistory accepts anything within 25%, which is wide
+    //     enough to file GBP/USD history under EUR/USD, so this is
+    //     what makes a bad attribution filterable after the fact.
+    "source", "matchDist"
   ];
 
-  const SCHEMA_VERSION = 2;
+  const SCHEMA_VERSION = 3;
 
   let dbPromise = null;
   let cachedCount = 0;
@@ -129,6 +142,43 @@
         });
       });
     }).catch(() => false);
+  }
+
+  /* --------------------------------------------------------------
+     recordBulk(rows)
+     Many rows in ONE transaction. The harvest writes tens of
+     thousands; a transaction per row is unusably slow.
+
+     Two deliberate differences from record():
+
+     1. Each row's own `settled` flag is preserved. A harvested row
+        arrives already settled — the bar that resolved it is sitting
+        right there in the history.
+     2. Uses add(), not put(), so an existing row is never overwritten.
+        A live row carries tick microstructure and real flip-gate
+        behaviour that a harvested row cannot reconstruct; if the two
+        ever collide on an id, live must win.
+
+     Returns the number actually written (duplicates are skipped, not
+     counted, and do not abort the batch).
+     -------------------------------------------------------------- */
+  function recordBulk(rows) {
+    if (!Array.isArray(rows) || rows.length === 0) return Promise.resolve(0);
+    return openDb().then(db => new Promise((resolve, reject) => {
+      const t = db.transaction(STORE, "readwrite");
+      const store = t.objectStore(STORE);
+      let written = 0;
+      for (const row of rows) {
+        if (!row || !row.id) continue;
+        row.schema = SCHEMA_VERSION;
+        const req = store.add(row);
+        req.onsuccess = () => { written++; };
+        req.onerror = (ev) => { ev.preventDefault(); ev.stopPropagation(); };
+      }
+      t.oncomplete = () => { cachedCount += written; resolve(written); };
+      t.onerror = () => reject(t.error);
+      t.onabort = () => reject(t.error || new Error("bulk write aborted"));
+    })).catch(() => 0);
   }
 
   /* --------------------------------------------------------------
@@ -255,6 +305,7 @@
     COLUMNS,
     SCHEMA_VERSION,
     record,
+    recordBulk,
     patch,
     settle,
     setEntryTick,
