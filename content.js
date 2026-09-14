@@ -1,5 +1,5 @@
 (function () {
-  const VAULT_KEY = "__QX_ASSET_VAULT_V34__";
+  const VAULT_KEY = "__QX_ASSET_VAULT_V35__";
   const LOG_KEY = "__QX_SHARED_LOG_V24__";
   const PENDING_KEY = "__QX_SHARED_PENDING_V22__";
 
@@ -502,7 +502,7 @@
     } else if (minFloor > state.currentCandle.time) {
       const finishedCandle = Object.assign({}, state.currentCandle);
       state.candles1m.push(finishedCandle);
-      if (state.candles1m.length > 240) state.candles1m.shift();
+      if (state.candles1m.length > 2000) state.candles1m.shift();
 
       reconcilePendingTrades(activeAsset, state.candles1m, minFloor);
 
@@ -529,14 +529,22 @@
     if (priceEl) priceEl.textContent = state.rawPrice || price.toFixed(state.decimals);
   }
 
+  function mergeCandleArrays(existing, incoming) {
+    const map = new Map();
+    (existing || []).forEach(c => map.set(c.time, c));
+    (incoming || []).forEach(c => map.set(c.time, c));
+    const merged = Array.from(map.values()).sort((a, b) => a.time - b.time);
+    return merged.length > 2000 ? merged.slice(-2000) : merged;
+  }
+
   function ingestHistory(candles, samplePrice) {
     if (!candles || candles.length === 0) return;
 
     globalHistoryPool.unshift({ candles: candles, samplePrice: samplePrice });
-    if (globalHistoryPool.length > 25) globalHistoryPool.pop();
+    if (globalHistoryPool.length > 35) globalHistoryPool.pop();
 
     if (state.livePrice !== null && Math.abs(samplePrice - state.livePrice) / state.livePrice <= 0.25) {
-      state.candles1m = [...candles];
+      state.candles1m = mergeCandleArrays(state.candles1m, candles);
       reconcilePendingTrades(activeAsset, state.candles1m, state.currentCandle?.time);
       saveVault();
       updateUI();
@@ -545,7 +553,7 @@
 
     for (const [name, data] of assetVault.entries()) {
       if (data.livePrice !== null && Math.abs(samplePrice - data.livePrice) / data.livePrice <= 0.25) {
-        data.candles1m = [...candles];
+        data.candles1m = mergeCandleArrays(data.candles1m, candles);
         reconcilePendingTrades(name, data.candles1m, data.currentCandle?.time);
         saveVault();
         if (name === activeAsset) {
@@ -1652,7 +1660,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.40 [S: v1.0]</small>
+          <strong>QX Assistant</strong> <small>v1.4.41 [S: v1.0]</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-sound-strong" class="qx-audio-btn" title="Toggle Strong Alerts (Triple Fanfare x3)">${strongSoundEnabled ? "S:🔊" : "S:🔇"}</button>

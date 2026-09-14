@@ -1,161 +1,110 @@
 (function () {
-  if (window.__QX_PAGE_HOOK__) return;
-  window.__QX_PAGE_HOOK__ = true;
+  if (window.__QX_HOOK_ATTACHED__) return;
+  window.__QX_HOOK_ATTACHED__ = true;
 
-  const historyRing = [];
-  let lastPrice = null;
-  let lastTime = 0;
+  const OriginalWebSocket = window.WebSocket;
 
-  // 1. FAST 60FPS CANVAS PRICE EMITTER
-  const origFill = CanvasRenderingContext2D.prototype.fillText;
-  CanvasRenderingContext2D.prototype.fillText = function (text, x, y, maxW) {
-    if (typeof text === "string") {
-      const clean = text.trim();
-      if (/^\d{1,7}\.\d{1,6}$/.test(clean) && !clean.includes(":") && !clean.includes("%")) {
-        const val = parseFloat(clean);
-        if (!isNaN(val) && val > 0) {
-          const now = Date.now();
-          if (val !== lastPrice || (now - lastTime > 200)) {
-            lastPrice = val;
-            lastTime = now;
-            const decimals = clean.includes(".") ? clean.split(".")[1].length : 2;
+  function parseQuotexCandles(rawList) {
+    if (!Array.isArray(rawList) || rawList.length === 0) return null;
+
+    const parsed = [];
+    for (const item of rawList) {
+      if (!item) continue;
+
+      let time = 0, open = 0, close = 0, high = 0, low = 0;
+
+      if (Array.isArray(item) && item.length >= 5) {
+        // Quotex WebSocket History Array: [time, open, close, high, low]
+        time = item[0] < 1e11 ? item[0] * 1000 : item[0];
+        open = Number(item[1]);
+        close = Number(item[2]); // Index 2 is Close
+        high = Number(item[3]);  // Index 3 is High
+        low = Number(item[4]);   // Index 4 is Low
+      } else if (typeof item === "object") {
+        const rawTime = item.time || item.t || item.timestamp;
+        time = rawTime < 1e11 ? rawTime * 1000 : rawTime;
+        open = Number(item.open ?? item.o);
+        close = Number(item.close ?? item.c);
+        high = Number(item.high ?? item.h ?? Math.max(open, close));
+        low = Number(item.low ?? item.l ?? Math.min(open, close));
+      }
+
+      if (!time || isNaN(open) || isNaN(close)) continue;
+
+      const trueHigh = Math.max(open, close, isNaN(high) ? open : high);
+      const trueLow = Math.min(open, close, isNaN(low) ? open : low);
+      const minFloor = Math.floor(time / 60000) * 60000;
+
+      parsed.push({
+        time: minFloor,
+        open: open,
+        high: trueHigh,
+        low: trueLow,
+        close: close
+      });
+    }
+
+    if (parsed.length === 0) return null;
+
+    parsed.sort((a, b) => a.time - b.time);
+    const dedupe = [];
+    for (let i = 0; i < parsed.length; i++) {
+      if (i === 0 || parsed[i].time !== parsed[i - 1].time) {
+        dedupe.push(parsed[i]);
+      }
+    }
+    return dedupe;
+  }
+
+  window.WebSocket = function (...args) {
+    const ws = new OriginalWebSocket(...args);
+
+    ws.addEventListener("message", (e) => {
+      try {
+        const msg = e.data;
+        if (typeof msg !== "string") return;
+
+        // 1. Intercept Live Fast Price Ticks
+        if (msg.startsWith('42["tick"') || msg.includes('"price"') || msg.includes('"rate"')) {
+          const match = msg.match(/"price":\s*([0-9.]+)/) || msg.match(/"rate":\s*([0-9.]+)/);
+          if (match) {
+            const rawText = match[1];
+            const price = parseFloat(rawText);
+            const decimals = rawText.includes(".") ? rawText.split(".")[1].length : 3;
             window.postMessage({
               type: "QX_FAST_PRICE_TICK",
-              payload: { price: val, rawText: clean, decimals: decimals, timestamp: now }
+              payload: { price, rawText, decimals, timestamp: Date.now() }
             }, "*");
           }
         }
-      }
-    }
-    return origFill.apply(this, arguments);
-  };
 
-  // 2. WEBSOCKET CANDLE PARSER
-  function parseCandle(item) {
-    if (!item) return null;
-    if (typeof item === "object" && !Array.isArray(item)) {
-      const t = item.time ?? item.timestamp ?? item.t;
-      const o = item.open ?? item.o;
-      const h = item.high ?? item.h;
-      const l = item.low ?? item.l;
-      const c = item.close ?? item.c;
-      if (t !== undefined && o !== undefined && c !== undefined) {
-        const timeMs = t < 1e11 ? t * 1000 : t;
-        const nO = parseFloat(o);
-        const nC = parseFloat(c);
-        const nH = h !== undefined ? parseFloat(h) : Math.max(nO, nC);
-        const nL = l !== undefined ? parseFloat(l) : Math.min(nO, nC);
-        if (!isNaN(nO) && !isNaN(nC)) {
-          return {
-            time: Math.floor(timeMs / 60000) * 60000,
-            open: nO,
-            high: Math.max(nH, nO, nC),
-            low: Math.min(nL, nO, nC),
-            close: nC
-          };
+        // 2. Intercept Historical Candle Batches (Initial load + Drag/Scroll backfill)
+        if (msg.includes("history") || msg.includes("candles") || (msg.startsWith("42[") && msg.includes("[["))) {
+          const jsonStr = msg.replace(/^[0-9]+/, "");
+          const data = JSON.parse(jsonStr);
+
+          let candlePayload = null;
+          if (Array.isArray(data)) {
+            candlePayload = data[1]?.data || data[1]?.candles || data[1];
+          } else if (typeof data === "object") {
+            candlePayload = data.data || data.candles || data.history;
+          }
+
+          if (Array.isArray(candlePayload) && candlePayload.length >= 5) {
+            const cleanCandles = parseQuotexCandles(candlePayload);
+            if (cleanCandles && cleanCandles.length > 0) {
+              const sample = cleanCandles[cleanCandles.length - 1].close;
+              window.postMessage({
+                type: "QX_HISTORICAL_CANDLES",
+                payload: { candles: cleanCandles, samplePrice: sample }
+              }, "*");
+            }
+          }
         }
-      }
-    }
-    if (Array.isArray(item) && item.length >= 5) {
-      const t = item[0];
-      const timeMs = t < 1e11 ? t * 1000 : t;
-      const vals = [parseFloat(item[1]), parseFloat(item[2]), parseFloat(item[3]), parseFloat(item[4])];
-      if (vals.every(v => !isNaN(v) && v > 0)) {
-        return {
-          time: Math.floor(timeMs / 60000) * 60000,
-          open: vals[0],
-          high: Math.max(...vals),
-          low: Math.min(...vals),
-          close: parseFloat(item[4] ?? item[2])
-        };
-      }
-    }
-    return null;
-  }
-
-  function extractCandles(arr) {
-    if (!Array.isArray(arr) || arr.length < 8) return null;
-    const parsed = [];
-    for (let i = 0; i < arr.length; i++) {
-      const c = parseCandle(arr[i]);
-      if (c) parsed.push(c);
-      else if (parsed.length > 0 && parsed.length < 5) return null;
-    }
-    if (parsed.length >= 8) {
-      parsed.sort((a, b) => a.time - b.time);
-      return parsed;
-    }
-    return null;
-  }
-
-  function deepSearch(data, depth = 0) {
-    if (!data || depth > 5) return null;
-    if (Array.isArray(data)) {
-      const list = extractCandles(data);
-      if (list) return list;
-      for (const it of data) {
-        const res = deepSearch(it, depth + 1);
-        if (res) return res;
-      }
-    } else if (typeof data === "object") {
-      for (const k of ["candles", "history", "data", "quotes", "bars"]) {
-        if (data[k]) {
-          const res = deepSearch(data[k], depth + 1);
-          if (res) return res;
-        }
-      }
-      for (const k of Object.keys(data)) {
-        if (typeof data[k] === "object") {
-          const res = deepSearch(data[k], depth + 1);
-          if (res) return res;
-        }
-      }
-    }
-    return null;
-  }
-
-  function handleIncoming(raw) {
-    try {
-      let str = typeof raw === "string" ? raw : new TextDecoder().decode(raw);
-      const b1 = str.indexOf("{");
-      const b2 = str.indexOf("[");
-      let start = -1;
-      if (b1 !== -1 && b2 !== -1) start = Math.min(b1, b2);
-      else if (b1 !== -1) start = b1;
-      else if (b2 !== -1) start = b2;
-      if (start === -1) return;
-
-      const parsed = JSON.parse(str.substring(start));
-      const candles = deepSearch(parsed);
-      if (candles && candles.length >= 8) {
-        const samplePrice = candles[candles.length - 1].close;
-        const pkt = { candles: candles, samplePrice: samplePrice, time: Date.now() };
-
-        historyRing.unshift(pkt);
-        if (historyRing.length > 25) historyRing.pop();
-
-        window.postMessage({ type: "QX_HISTORICAL_CANDLES", payload: pkt }, "*");
-      }
-    } catch (_) {}
-  }
-
-  const OrigWS = window.WebSocket;
-  window.WebSocket = function (...args) {
-    const ws = new OrigWS(...args);
-    ws.addEventListener("message", (ev) => {
-      if (typeof ev.data === "string") handleIncoming(ev.data);
-      else if (ev.data instanceof Blob) ev.data.text().then(t => handleIncoming(t));
-      else if (ev.data instanceof ArrayBuffer) handleIncoming(ev.data);
+      } catch (_) {}
     });
+
     return ws;
   };
-  window.WebSocket.prototype = OrigWS.prototype;
-
-  window.addEventListener("message", (e) => {
-    if (e.data?.type === "QX_REQ_REPLAY") {
-      historyRing.forEach(p => {
-        window.postMessage({ type: "QX_HISTORICAL_CANDLES", payload: p }, "*");
-      });
-    }
-  });
+  window.WebSocket.prototype = OriginalWebSocket.prototype;
 })();
