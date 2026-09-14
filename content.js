@@ -63,8 +63,6 @@
   const TICK_RING_MS = 90000;
 
   let lastTickTs = 0;
-  let telemetryCount = 0;
-  let telemetrySettled = 0;
 
   function pushTick(price, time) {
     tickRing.push({ t: time, p: price });
@@ -1796,6 +1794,33 @@
     return out;
   }
 
+  // The Harvest and S/R Test buttons were removed from the panel in
+  // v1.4.59, but the measurement rig behind them is the durable part of
+  // this project and is kept reachable rather than deleted. Lives in the
+  // ISOLATED world alongside __QX_TELEMETRY__, so the DevTools console
+  // context must be switched to the extension to call it — it is
+  // undefined in the page context.
+  //
+  //   __QX_TOOLS__.harvest().then(console.log)   // replay all assets
+  //   __QX_TOOLS__.srScan()                      // 15m S/R rejection test
+  //   __QX_TOOLS__.attribution()                 // per-asset match health
+  window.__QX_TOOLS__ = {
+    harvest: runHarvest,
+    srScan: runSrReversalScan,
+    attribution: () => {
+      const out = { assets: [], unattributedHistory, spliceRejects };
+      for (const [name, d] of assetVault.entries()) {
+        out.assets.push({
+          asset: name,
+          bars: (d.candles1m || []).length,
+          matchMode: d.matchMode || null,
+          matchDist: d.matchDist !== undefined ? d.matchDist : null
+        });
+      }
+      return out;
+    }
+  };
+
   // ==============================================================
   // ZERO-DEPENDENCY NATIVE OPENXML (.XLSX) BUILDER
   // ==============================================================
@@ -2698,10 +2723,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.58 [S: v1.0]</small>
-          <span id="qx-tel-pill" title="Signal telemetry records stored locally (click to export CSV)">
-            &#9679; <span id="qx-tel-count">0</span><span id="qx-tel-settled"></span>
-          </span>
+          <strong>QX Assistant</strong> <small>v1.4.59 [S: v1.0]</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-sound-strong" class="qx-audio-btn" title="Toggle Strong Alerts (Triple Fanfare x3)">${strongSoundEnabled ? "S:🔊" : "S:🔇"}</button>
@@ -2769,8 +2791,6 @@
             </div>
             <div id="qx-backtest-controls" class="qx-tab-actions qx-hidden">
               <button id="qx-btn-run-bt" class="qx-bt-run-btn" title="Run Backward.test on Active Chart History">Run</button>
-              <button id="qx-btn-harvest" class="qx-bt-run-btn" title="Replay ALL loaded assets into telemetry as labelled rows (source: harvest)">Harvest</button>
-              <button id="qx-btn-srtest" class="qx-bt-run-btn" title="15m S/R rejection-candle scan across all loaded assets, train/holdout split">S/R Test</button>
             </div>
           </div>
 
@@ -2889,124 +2909,6 @@
       runBacktestForActiveAsset();
     });
 
-    const btnSrTest = document.getElementById("qx-btn-srtest");
-    btnSrTest.addEventListener("click", () => {
-      const el = document.getElementById("qx-bt-content");
-      if (!el) return;
-      const label = btnSrTest.textContent;
-      btnSrTest.textContent = "...";
-      el.innerHTML = `<div class="qx-bt-prompt">Scanning ${assetVault.size} asset(s)...</div>`;
-
-      setTimeout(() => {
-        let r;
-        try { r = runSrReversalScan(); }
-        catch (e) {
-          btnSrTest.textContent = label;
-          el.innerHTML = `<div class="qx-bt-prompt" style="color:#fca5a5;">S/R scan failed.</div>`;
-          return;
-        }
-        btnSrTest.textContent = label;
-
-        if (r.assets.length === 0) {
-          el.innerHTML = `<div class="qx-bt-prompt" style="color:#fca5a5;">
-            No asset has 200+ live bars loaded. Visit each asset tab, scroll the chart
-            back to pull history, then re-run.</div>`;
-          return;
-        }
-
-        // A result is only interesting if the interval's LOWER bound
-        // clears this test's own null — not 50%, and not the point
-        // estimate. Anything else is the bias, or noise.
-        const cell = (s, nul) => {
-          if (!s || !s.decided) return `<td style="color:#64748b;">—</td>`;
-          const beats = s.lo > nul;
-          const col = beats ? "#34d399" : (s.hi < nul ? "#f87171" : "#e2e8f0");
-          return `<td style="color:${col};white-space:nowrap;">${s.rate}%
-            <span style="color:#64748b;">[${s.lo}-${s.hi}]</span>
-            <span style="color:#475569;">n=${s.decided}</span></td>`;
-        };
-        const rowFor = (grp, mk) => `
-          <tr>
-            <td style="white-space:nowrap;"><strong>${mk}</strong>
-              <span style="color:#64748b;">null ${SR_NULL[mk]}%</span></td>
-            ${cell(r[grp][mk].train, SR_NULL[mk])}
-            ${cell(r[grp][mk].holdout, SR_NULL[mk])}
-          </tr>`;
-        const table = grp => `
-          <div style="margin-top:6px;color:#94a3b8;font-size:9.5px;"><strong>${grp}</strong></div>
-          <table class="qx-log-table">
-            <thead><tr><th>Method</th><th>Train (old 2/3)</th><th>Holdout (new 1/3)</th></tr></thead>
-            <tbody>${Object.keys(SR_NULL).map(mk => rowFor(grp, mk)).join("")}</tbody>
-          </table>`;
-
-        const totalLive = r.assets.reduce((a, x) => a + x.live, 0);
-        el.innerHTML = `
-          ${table("OTC")}
-          ${table("REAL")}
-          <div class="qx-bt-mini-footer" style="flex-direction:column;align-items:flex-start;gap:2px;">
-            <div style="color:#64748b;font-size:8.5px;">
-              ${r.assets.length} asset(s), ${totalLive} live bars${r.droppedDeadBars > 0
-                ? ` · ${r.droppedDeadBars} frozen bars dropped (market shut)` : ''}
-            </div>
-            <div style="color:#fbbf24;font-size:8.5px;">
-              ⚠ "null" is what this test returns on data with NO edge — green only when
-              the interval's lower bound beats it. Break-even is a further 52-57%.
-            </div>
-          </div>`;
-      }, 30);
-    });
-
-    const btnHarvest = document.getElementById("qx-btn-harvest");
-    let harvestRunning = false;
-    btnHarvest.addEventListener("click", () => {
-      if (harvestRunning) return;
-      harvestRunning = true;
-      const btContainer = document.getElementById("qx-bt-content");
-      const label = btnHarvest.textContent;
-      btnHarvest.textContent = "...";
-
-      const render = (html) => { if (btContainer) btContainer.innerHTML = html; };
-      render(`<div class="qx-bt-prompt">Harvesting ${assetVault.size} asset(s)...</div>`);
-
-      runHarvest(p => {
-        render(`
-          <div class="qx-bt-prompt" style="text-align: left;">
-            Harvesting <strong>${p.current}</strong> (${p.done}/${p.total})<br>
-            <span style="color: #64748b; font-size: 9.5px;">
-              ${p.rowsBuilt} rows built, ${p.rowsWritten} written
-            </span>
-          </div>
-        `);
-      }).then(s => {
-        harvestRunning = false;
-        btnHarvest.textContent = label;
-        if (s.error) {
-          render(`<div class="qx-bt-prompt" style="color: #fca5a5;">${s.error}</div>`);
-          return;
-        }
-        const dupes = s.rowsBuilt - s.rowsWritten;
-        render(`
-          <div class="qx-bt-prompt" style="text-align: left;">
-            <strong style="color: #34d399;">Harvest complete.</strong><br>
-            <span style="color: #94a3b8; font-size: 9.5px;">
-              ${s.rowsWritten} rows written from ${s.assetsHarvested} asset(s).
-              ${dupes > 0 ? `${dupes} already present, skipped.` : ''}
-            </span><br>
-            ${s.skipped.length > 0 ? `<span style="color: #64748b; font-size: 8.5px;">Skipped (need 25+ bars): ${s.skipped.join(', ')}</span><br>` : ''}
-            <span style="color: #fbbf24; font-size: 8.5px;">
-              Tagged source:"harvest" — no ticks, no flip gate, no payout, and
-              scored on a fully closed bar. Filter on source; never pool with live.
-            </span>
-          </div>
-        `);
-        refreshTelemetryPill();
-      }).catch(() => {
-        harvestRunning = false;
-        btnHarvest.textContent = label;
-        render(`<div class="qx-bt-prompt" style="color: #fca5a5;">Harvest failed.</div>`);
-      });
-    });
-
     const btnExport = document.getElementById("qx-btn-export-log");
     btnExport.addEventListener("click", () => {
       exportTwoSheetWorkbookXlsx();
@@ -3079,61 +2981,6 @@
       bodyEl.style.display = isHidden ? "block" : "none";
     });
 
-    // --- TELEMETRY PILL: live record count, click to export CSV ---
-    const telPill = document.getElementById("qx-tel-pill");
-    if (telPill) {
-      telPill.addEventListener("click", () => {
-        const tel = TEL();
-        if (!tel) return;
-        const label = document.getElementById("qx-tel-count");
-        const prev = label ? label.textContent : "";
-        if (label) label.textContent = "...";
-        tel.exportCsv().then(n => {
-          if (label) label.textContent = prev;
-          console.log(`[QX] Exported ${n} telemetry rows.`);
-        }).catch(() => {
-          if (label) label.textContent = prev;
-        });
-      });
-    }
-
-    function refreshTelemetryPill() {
-      const tel = TEL();
-      if (!tel) return;
-
-      // Attribution health. Before v1.4.53 a mis-filed history packet
-      // left no trace at all; now anything the symbol match could not
-      // claim is counted rather than guessed at.
-      const pill = document.getElementById("qx-tel-pill");
-      if (pill) {
-        const modes = {};
-        for (const [, d] of assetVault.entries()) {
-          const m = d.matchMode || "unknown";
-          modes[m] = (modes[m] || 0) + 1;
-        }
-        const byMode = Object.keys(modes).map(k => `${modes[k]} ${k}`).join(", ") || "none";
-        pill.title =
-          `Signal telemetry stored locally (click to export CSV).\n\n`
-          + `History attribution: ${byMode}.\n`
-          + `${unattributedHistory} packet(s) dropped as unattributable, `
-          + `${spliceRejects} bar(s) rejected for an impossible 1m move.\n\n`
-          + (unattributedHistory > 0 || spliceRejects > 0
-              ? `Non-zero is healthy: these were silently mis-filed before v1.4.53.`
-              : `Clean.`);
-      }
-      tel.count().then(n => {
-        telemetryCount = n;
-        const el = document.getElementById("qx-tel-count");
-        if (el) el.textContent = n;
-      }).catch(() => {});
-      tel.countSettled().then(n => {
-        telemetrySettled = n;
-        const el = document.getElementById("qx-tel-settled");
-        if (el) el.textContent = n > 0 ? ` (${n}✓)` : "";
-      }).catch(() => {});
-    }
-    refreshTelemetryPill();
-    setInterval(refreshTelemetryPill, 15000);
 
     const found = getActiveTabFromDOM();
     if (found && found !== activeAsset) switchAsset(found);
@@ -3301,13 +3148,7 @@
         matchMode: state.matchMode || null
       };
 
-      tel.record(row).then(ok => {
-        if (ok) {
-          telemetryCount++;
-          const el = document.getElementById("qx-tel-count");
-          if (el) el.textContent = telemetryCount;
-        }
-      });
+      tel.record(row);
     } catch (_) {}
   }
 
