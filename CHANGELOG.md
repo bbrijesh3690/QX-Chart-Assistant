@@ -1,6 +1,31 @@
 # Changelog
 
-## 1.4.55-symbol-order (Current)
+## 1.4.56-quiet-panel (Current)
+Status: UI
+
+Display only. No change to scoring, the `:55` lock, the `:58` flip gate, trade
+queuing or telemetry — verified by diff.
+
+### Forward pill shows counts only
+`31T: 12W - 19L`. The rate, Wilson interval and net units moved to the tooltip.
+At these sample sizes a percentage on the face of the pill invites being read
+as a result when it is still noise.
+
+### Pre-lock signal no longer displayed
+The verdict was recomputed every 250ms from the live tick, so it flickered
+between CALL / PUT / Neutral many times a minute. It is also **not
+actionable** — nothing is decided until the `:55` lock and entry is the next
+candle's open, so the forming value has no decision content. It now reads
+`Analyzing...` with `- / 5` until the lock, at which point the locked verdict
+appears as before.
+
+The flicker itself was informative, though: a signal that changes direction
+several times a minute on tick jitter is not describing anything stable. That
+is consistent with the 26,734-row verdict that the components carry no signal.
+
+---
+
+## 1.4.55-symbol-order
 Status: CRITICAL DATA FIX — completes v1.4.53/54
 
 Live check after v1.4.54: **13 of 15 assets matched by symbol, 2 still fell

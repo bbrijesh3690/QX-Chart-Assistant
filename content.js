@@ -2611,8 +2611,14 @@
       ? ` | ${netUnits >= 0 ? '+' : ''}${netUnits.toFixed(2)}u`
       : '';
 
-    summaryEl.textContent = `${totalCount}T: ${wins}W - ${losses}L${tieTxt} (${wr}% ${fmtCi(wins, totalDecided)})${netTxt}${expired > 0 ? ` ⚠${expired}` : ''}`;
-    summaryEl.title = `95% Wilson interval on ${totalDecided} settled trades.\n`
+    // Counts only. The rate, interval and net P/L moved to the tooltip:
+    // at these sample sizes a percentage on the face of the pill invites
+    // being read as a result when it is still noise.
+    summaryEl.textContent = `${totalCount}T: ${wins}W - ${losses}L${tieTxt}${expired > 0 ? ` ⚠${expired}` : ''}`;
+    summaryEl.title = `${wr}% win rate, 95% Wilson interval ${fmtCi(wins, totalDecided)}`
+      + (payoutKnown > 0 ? `, net ${netUnits >= 0 ? '+' : ''}${netUnits.toFixed(2)}u` : '')
+      + `.\n`
+      + `95% Wilson interval on ${totalDecided} settled trades.\n`
       + `Break-even is ${(beRef * 100).toFixed(1)}%, not 50% — a win returns only the payout, a loss costs the full stake.\n`
       + (payoutKnown > 0
           ? `Net ${netUnits >= 0 ? '+' : ''}${netUnits.toFixed(2)} units across ${payoutKnown} trades with a recorded payout.`
@@ -2673,7 +2679,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.55 [S: v1.0]</small>
+          <strong>QX Assistant</strong> <small>v1.4.56 [S: v1.0]</small>
           <span id="qx-tel-pill" title="Signal telemetry records stored locally (click to export CSV)">
             &#9679; <span id="qx-tel-count">0</span><span id="qx-tel-settled"></span>
           </span>
@@ -3413,22 +3419,21 @@
         signalLbl.textContent = `Signal (Renew in ${renewCountdown}s):`;
       }
 
+      // The pre-lock verdict is recomputed every 250ms off the live
+      // tick, so it flickers between CALL / PUT / Neutral many times a
+      // minute. It is also not actionable: nothing is decided until the
+      // :55 lock, and entry is the next candle's open. Showing it only
+      // created noise and an urge to read direction into what is
+      // mostly tick jitter, so it is withheld until the lock.
       if (signalEl) {
-        if (liveVerdict.dir !== "NONE") {
-          signalEl.textContent = `Forming: ${liveVerdict.setup}`;
-          signalEl.style.color = liveVerdict.color;
-        } else {
-          signalEl.textContent = `Analyzing...`;
-          signalEl.style.color = "#94a3b8";
-        }
+        signalEl.textContent = "Analyzing...";
+        signalEl.style.color = "#94a3b8";
       }
 
       if (scoreEl) {
-        scoreEl.textContent = `${liveVerdict.score} / 5`;
-        scoreEl.style.background = liveVerdict.score >= 3 
-          ? (liveVerdict.dir === "CALL" ? "#065f46" : "#7f1d1d") 
-          : "#2d3748";
-        scoreEl.style.color = liveVerdict.score >= 3 ? "#ffffff" : "#cbd5e1";
+        scoreEl.textContent = `- / 5`;
+        scoreEl.style.background = "#2d3748";
+        scoreEl.style.color = "#cbd5e1";
       }
     }
 
