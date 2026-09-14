@@ -1,7 +1,7 @@
 (function () {
-  const VAULT_KEY = "__QX_ASSET_VAULT_V33__";
-  const LOG_KEY = "__QX_SHARED_LOG_V23__";
-  const PENDING_KEY = "__QX_SHARED_PENDING_V21__";
+  const VAULT_KEY = "__QX_ASSET_VAULT_V34__";
+  const LOG_KEY = "__QX_SHARED_LOG_V24__";
+  const PENDING_KEY = "__QX_SHARED_PENDING_V22__";
 
   const assetVault = new Map();
   const globalHistoryPool = [];
@@ -46,7 +46,6 @@
     }
   });
 
-  // Polling with dirty check to avoid unnecessary DOM work
   setInterval(() => {
     loadLog();
     if (activeTab === "FORWARD") renderLogUI();
@@ -320,7 +319,7 @@
     s = s.replace(/\s+/g, " ");
 
     if (!s || s.length < 2 || s.includes("%") || /^\d+$/.test(s)) return null;
-    if (/^(close|tab|payout|pin|active|favorite)$/i.test(s)) return null;
+    if (/^(close|tab|payout|pin|active|favorite|live\s*account|demo\s*account|deposit|withdrawal|account|profile|up\s*down|leaderboard|tournaments|analytics)$/i.test(s)) return null;
 
     const pairMatch = s.match(/([A-Z]{3}\/[A-Z]{3})/i);
     if (pairMatch) {
@@ -328,47 +327,86 @@
       return isOtc ? `${pairMatch[1].toUpperCase()} (OTC)` : pairMatch[1].toUpperCase();
     }
 
-    const generalMatch = s.match(/([A-Za-z0-9\.\-\s]+(?:\(OTC\))?)/i);
-    if (generalMatch && generalMatch[1].trim().length >= 3) {
-      return generalMatch[1].trim();
+    const commodityMatch = s.match(/^([A-Za-z\s\.\-]+(?:\(OTC\)))$/i);
+    if (commodityMatch && !/account|profile|live|demo|up\s*down/i.test(commodityMatch[1])) {
+      return commodityMatch[1].trim();
     }
+
     return null;
   }
 
-  // OPTIMIZATION 1: Targeted Tab Scanner without document.querySelectorAll("*") layout thrashing
+  // ==============================================================
+  // BULLETPROOF SCOPED TAB SCANNER (FAST & LAYOUT-SAFE)
+  // ==============================================================
   function getActiveTabFromDOM() {
-    const candidateTabs = Array.from(document.querySelectorAll("[class*='tab'], [class*='item']")).filter(el => {
+    // 1. Scoped search for leaf/near-leaf nodes that mention a currency pair or OTC asset
+    const candidates = Array.from(document.querySelectorAll("div, a, button, li, span")).filter(el => {
       if (el.closest("#qx-assistant-panel")) return false;
-      const text = el.innerText || el.textContent || "";
-      return /\d{1,3}\s*%/.test(text) && /[A-Z]{3}/i.test(text);
+      if (el.children.length > 4) return false;
+      const t = el.innerText || el.textContent || "";
+      return t.length >= 3 && t.length <= 45 && /[A-Z]{3}/i.test(t);
     });
 
-    if (candidateTabs.length === 0) return null;
+    if (candidates.length === 0) return null;
 
-    let bestTab = null;
+    let bestName = null;
     let highestScore = -1;
 
-    for (const tab of candidateTabs) {
-      let score = 0;
-      const cls = (tab.className || "") + " " + (tab.getAttribute("aria-selected") || "");
+    for (const el of candidates) {
+      // Find the tab wrapper (either el itself or its parent up to 3 levels)
+      let tabEl = el;
+      for (let depth = 0; depth < 3 && tabEl && tabEl !== document.body; depth++) {
+        const r = tabEl.getBoundingClientRect();
+        if (r.top >= 0 && r.top <= 85 && r.height >= 20 && r.height <= 65 && r.width >= 40 && r.width <= 320) {
+          break;
+        }
+        tabEl = tabEl.parentElement;
+      }
 
-      if (/(tab--active|tabs__item--active|is-active|\bactive\b|selected)/i.test(cls)) {
+      if (!tabEl || tabEl === document.body) continue;
+
+      const r = tabEl.getBoundingClientRect();
+      if (r.top < 0 || r.top > 85 || r.height < 20 || r.height > 65 || r.width < 40 || r.width > 320) continue;
+
+      const rawText = tabEl.innerText || tabEl.textContent || "";
+      const parsed = formatCleanName(rawText);
+      if (!parsed) continue;
+
+      let score = 10;
+      const cls = (tabEl.className || "") + " " + (tabEl.getAttribute("aria-selected") || "") + " " + (tabEl.getAttribute("data-active") || "");
+
+      // 1. Active class or attribute
+      if (/(active|selected|current|tab--active|is-active)/i.test(cls)) {
         score += 50;
+      }
+
+      // 2. Action elements (close button / svg cross)
+      if (tabEl.querySelector("button, svg, [class*='close'], [class*='cross']")) {
+        score += 30;
+      }
+
+      // 3. Dark background check
+      try {
+        const bg = window.getComputedStyle(tabEl).backgroundColor;
+        const m = bg.match(/\d+/g);
+        if (m && m.length >= 3) {
+          const lum = 0.299 * m[0] + 0.587 * m[1] + 0.114 * m[2];
+          if (lum < 25) score += 30;
+        }
+      } catch (_) {}
+
+      // 4. Presence of payout percentage
+      if (/\d{1,3}\s*%/.test(rawText)) {
+        score += 20;
       }
 
       if (score > highestScore) {
         highestScore = score;
-        bestTab = tab;
+        bestName = parsed;
       }
     }
 
-    if (bestTab && highestScore >= 30) {
-      const clone = bestTab.cloneNode(true);
-      clone.querySelectorAll("button, svg").forEach(n => n.remove());
-      return formatCleanName(clone.innerText || clone.textContent);
-    }
-
-    return null;
+    return bestName;
   }
 
   let activeAsset = getActiveTabFromDOM() || "Detecting...";
@@ -402,13 +440,13 @@
     }
   }
 
-  // Fast direct click listener (zero overhead tab switching)
+  // Pointer click listener (traverses up to 6 parents)
   document.addEventListener("pointerdown", (e) => {
     if (e.target.closest("#qx-assistant-panel")) return;
     let el = e.target;
-    for (let i = 0; i < 4 && el && el !== document.body; i++) {
+    for (let i = 0; i < 6 && el && el !== document.body; i++) {
       const text = el.innerText || el.textContent || "";
-      if (text.length < 35 && /[A-Z]{3}/i.test(text)) {
+      if (/[A-Z]{3}/i.test(text)) {
         const parsed = formatCleanName(text);
         if (parsed) {
           switchAsset(parsed);
@@ -419,16 +457,16 @@
     }
   }, true);
 
-  // OPTIMIZATION 2: Replaced heavy MutationObserver with gentle 1.5s idle check
+  // Gentle tab heartbeat: fast when detecting, gentle when stable
   setInterval(() => {
     const found = getActiveTabFromDOM();
-    if (found && found !== activeAsset) {
+    if (found && (found !== activeAsset || activeAsset === "Detecting...")) {
       switchAsset(found);
     }
-  }, 1500);
+  }, 400);
 
   // ==============================================================
-  // OPTIMIZATION 3: FAST TICK INGESTION (DECOUPLED FROM MATRIX MATH)
+  // FAST TICK INGESTION
   // ==============================================================
   function ingestFastTick(price, rawText, decimals, time) {
     if (activeAsset === "Detecting...") {
@@ -487,7 +525,6 @@
       saveVault();
     }
 
-    // Direct, cheap DOM update for the price text (virtually 0% CPU)
     const priceEl = document.getElementById("qx-ui-price");
     if (priceEl) priceEl.textContent = state.rawPrice || price.toFixed(state.decimals);
   }
@@ -1064,7 +1101,7 @@
     const assetsToExport = [];
     if (assetVault.size > 0) {
       for (const [name, data] of assetVault.entries()) {
-        if (data.candles1m && data.candles1m.length > 0) {
+        if (data.candles1m && data.candles1m.length > 0 && !/live\s*account|up\s*down/i.test(name)) {
           assetsToExport.push({ name, candles: data.candles1m, dec: data.decimals || 3 });
         }
       }
@@ -1505,9 +1542,6 @@
     `;
   }
 
-  // ==============================================================
-  // OPTIMIZATION 4: DIRTY-CHECKED RENDER LOG (ZERO EXCESSIVE DOM CYCLES)
-  // ==============================================================
   function renderLogUI() {
     const bodyEl = document.getElementById("qx-log-body");
     const summaryEl = document.getElementById("qx-log-summary");
@@ -1515,7 +1549,6 @@
     const tierFilterEl = document.getElementById("qx-log-tier-filter");
     if (!bodyEl || !summaryEl) return;
 
-    // Fast signature dirty-check: avoids completely destroying and re-rendering HTML
     const sig = `${tradeLog.length}_${tradeLog[0]?.id || ''}_${tradeLog[0]?.outcome || ''}_${currentPairFilter}_${currentTierFilter}`;
     if (sig === lastLogSignature) return;
     lastLogSignature = sig;
@@ -1619,7 +1652,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.39</small>
+          <strong>QX Assistant</strong> <small>v1.4.40</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-sound-strong" class="qx-audio-btn" title="Toggle Strong Alerts (Triple Fanfare x3)">${strongSoundEnabled ? "S:🔊" : "S:🔇"}</button>
@@ -1655,7 +1688,6 @@
             <span id="qx-ui-score" class="qx-pill">-- / 5</span>
           </div>
 
-          <!-- DYNAMIC FLIP-ONLY ADVISORY BANNER -->
           <div id="qx-ui-advisory" class="qx-advisory-box qx-hidden"></div>
 
           <div class="qx-tf-box">
@@ -1675,7 +1707,6 @@
           </div>
         </div>
 
-        <!-- DUAL-TAB DRAWER: Forward.test & Backward.test -->
         <div class="qx-section" id="qx-testing-section">
           <div class="qx-tabs-header">
             <div class="qx-tab-group">
@@ -1692,7 +1723,6 @@
             </div>
           </div>
 
-          <!-- View 1: Forward.test Table with Dual Dropdowns (Pair & Tier) -->
           <div id="qx-view-forward" class="qx-log-table-wrap">
             <table class="qx-log-table">
               <thead>
@@ -1721,7 +1751,6 @@
             </table>
           </div>
 
-          <!-- View 2: Backward.test Table -->
           <div id="qx-view-backtest" class="qx-log-table-wrap qx-hidden">
             <div id="qx-bt-content"></div>
           </div>
@@ -1880,6 +1909,9 @@
       bodyEl.style.display = isHidden ? "block" : "none";
     });
 
+    const found = getActiveTabFromDOM();
+    if (found && found !== activeAsset) switchAsset(found);
+
     renderLogUI();
     updateUI();
   }
@@ -1894,7 +1926,7 @@
   }, 400);
 
   // ==============================================================
-  // ANALYSIS, FLIP GATE & SIGNAL LOCK (STEADY 250MS CADENCE)
+  // ANALYSIS, FLIP GATE & SIGNAL LOCK
   // ==============================================================
   function updateAnalysis() {
     const dec = state.decimals !== undefined ? state.decimals : 3;
@@ -2063,7 +2095,6 @@
     }
   }
 
-  // Steady 250ms cadence (4x/sec instead of 30x/sec on micro-ticks)
   setInterval(updateAnalysis, 250);
 
   function updateUI() {
