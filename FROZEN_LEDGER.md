@@ -12,6 +12,7 @@
 | **v1.4.45** | `v1.4.45-frozen` | Last version with the divergent backtest S/R probe. Frozen before unifying the scoring paths. | Milestone 8 |
 | **v1.4.48** | `v1.4.48-frozen` | Unified scoring, Wilson intervals, forward-log integrity, 15x backtest. First version where both tabs measure one strategy. | Milestone 9 |
 | **v1.4.55** | `v1.4.55-frozen` | Symbol-based history attribution. First trustworthy dataset — and the version the decision gate was finally run on. | Milestone 10 |
+| **v1.4.61** | `v1.4.61-frozen` | Post-verdict cleanup: slim panel, session-scoped storage, nothing persists past the browser. | Milestone 11 |
 
 ## Measurement baseline
 
@@ -117,3 +118,56 @@ that Quotex does not always quote a symbol in the order it displays it —
 - The measurement rig itself is sound and reusable: it detects planted edges in
   both directions (65% momentum → 59.6%; 35% → 42.4%), reports Wilson intervals
   against payout-aware break-even, and now records how every row was attributed.
+
+## Milestone 11 — post-verdict cleanup (v1.4.56 – v1.4.61)
+
+The strategy was retired at Milestone 10. These seven commits tidy what was
+left and return the extension to its original brief: local, quiet, and
+leaving nothing behind. **No change to scoring, the `:55` lock, the `:58` flip
+gate, trade queuing or telemetry capture** — verified by diff on each.
+
+### Panel
+- Forward pill shows counts only (`2T: 1W - 1L`); rate, Wilson interval and net
+  units moved to the tooltip. A percentage on the face of the pill invites
+  being read as a result while it is still noise.
+- Between locks the panel **holds the last locked verdict** —
+  `PUT Bias [Analyzing next]` with its score — instead of showing a live one.
+  The pre-lock verdict was recomputed every 250ms off the tick and flickered
+  several times a minute, and it was never actionable: nothing is decided
+  until `:55` and entry is the next candle's open. Held, it cannot flicker.
+- Telemetry pill, Harvest and S/R Test removed. The rig behind the last two is
+  kept reachable on `__QX_TOOLS__` rather than deleted — it is the durable
+  result of this project.
+- Backtest staleness marker now appears when it becomes true. It was computed
+  only on Run and on asset switch, so a cached result silently aged while being
+  presented as current (observed: a result from 247 bars shown as current with
+  296 in the vault).
+
+### Storage — nothing outlives the browser session
+Reverts v1.4.49, which had made the trade log survive a relaunch so the gate
+could accumulate trades. The gate has been run, so the original requirement
+applies again.
+
+On a stale heartbeat — no Quotex tab open for >15s — the trade log, pending
+trades, expired counter and asset vault are cleared, and the telemetry store is
+emptied on first open. Panel position and the two sound toggles are kept, being
+preferences rather than records.
+
+This matters because `localStorage` and IndexedDB are scoped to the **Quotex
+origin**, not the extension: while that data exists, any script on
+qxbroker.com can read it. 31 MB of telemetry had accumulated there. Verified
+after a real browser restart: origin usage 31.24 MB → 0.019 MB, trade log
+empty, fresh session starting from two trades.
+
+### Two bugs found by testing rather than by reading
+- `deleteDatabase()` needs exclusive access. With a connection open it blocks,
+  and every later `open()` queues behind it — **observed freezing a tab's
+  renderer outright**. Two tabs booting together after a relaunch would hit
+  this. Replaced with `clear()`, which runs in an ordinary transaction and
+  cannot block.
+- A `QX_TELEMETRY` database can exist at version 1 with **no object store** —
+  any bare `indexedDB.open()` by name creates exactly that. Since `DB_VERSION`
+  is also 1, `onupgradeneeded` never fires and every transaction throws
+  `NotFoundError`: telemetry silently and permanently dead, with no symptom.
+  `openDb` now detects the missing store and reopens one version higher to
+  rebuild it. Verified against `fake-indexeddb`.
