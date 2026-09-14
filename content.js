@@ -37,6 +37,13 @@
   const globalHistoryPool = [];
   const backtestCache = new Map();
 
+  // Attribution health, surfaced in the panel. Non-zero means history
+  // arrived that could not be confidently assigned, or bars were
+  // rejected for implying an impossible one-minute move. Both are
+  // better than the silent mis-filing they replaced.
+  let unattributedHistory = 0;
+  let spliceRejects = 0;
+
   // ==============================================================
   // TELEMETRY PLUMBING (v1.4.44) — OBSERVES ONLY
   // Nothing below this comment may influence a signal. Every call
@@ -641,16 +648,37 @@
   let activeAsset = getActiveTabFromDOM() || "Detecting...";
   let state = getVaultEntry(activeAsset);
 
+  // Same attribution rule as ingestHistory: the symbol decides, and a
+  // price fallback only when it is unambiguous. Hydrating from a packet
+  // that belongs to a different pair is what produced series stitched
+  // out of two instruments.
   function tryHydrateCandles() {
     if (state.candles1m.length >= 20 || state.livePrice === null) return;
+
     for (const pkt of globalHistoryPool) {
-      if (Math.abs(pkt.samplePrice - state.livePrice) / state.livePrice <= 0.25) {
+      if (packetOwnedBy(pkt, activeAsset)) {
         state.candles1m = [...pkt.candles];
+        state.matchMode = "symbol";
         saveVault();
         reconcilePendingTrades(activeAsset, state.candles1m, state.currentCandle?.time);
         updateUI();
-        break;
+        return;
       }
+    }
+
+    const near = globalHistoryPool.filter(p =>
+      p.samplePrice > 0 && Math.abs(p.samplePrice - state.livePrice) / state.livePrice <= 0.02);
+    // Several packets can legitimately be the same asset (repeat fetches).
+    // Ambiguity that matters is two DIFFERENT price levels qualifying.
+    const levels = new Set(near.map(p => Math.round(Math.log(p.samplePrice) * 200)));
+    if (near.length && levels.size === 1) {
+      state.candles1m = [...near[0].candles];
+      state.matchMode = "price";
+      state.matchDist = Math.max(state.matchDist || 0,
+        Number((Math.abs(near[0].samplePrice - state.livePrice) / state.livePrice).toFixed(6)));
+      saveVault();
+      reconcilePendingTrades(activeAsset, state.candles1m, state.currentCandle?.time);
+      updateUI();
     }
   }
 
@@ -786,49 +814,115 @@
     if (priceEl) priceEl.textContent = state.rawPrice || price.toFixed(state.decimals);
   }
 
+  // Last line of defence. Even with symbol attribution, a bad merge
+  // would show up as an impossible one-minute move between adjacent
+  // bars — a 30% gap in AUD/JPY, or a 1000x jump. Real 1m FX does not
+  // do that, so drop bars that would create one rather than let a
+  // spliced series through.
   function mergeCandleArrays(existing, incoming) {
+    const ok = c => c && c.open > 0 && c.close > 0 && c.high > 0 && c.low > 0;
+    const have = (existing || []).filter(ok);
+    const add = (incoming || []).filter(ok);
+
+    // Reject a foreign block WHOLE. Trimming only the bar at the seam
+    // would remove the visible discontinuity while leaving the rest of
+    // the other instrument's bars in place — hiding the splice instead
+    // of removing it, which is worse than not checking at all.
+    if (have.length >= 5 && add.length >= 5) {
+      const med = arr => {
+        const s = arr.map(c => c.close).sort((a, b) => a - b);
+        return s[Math.floor(s.length / 2)];
+      };
+      const mHave = med(have), mAdd = med(add);
+      if (mHave > 0 && Math.abs(mAdd - mHave) / mHave > 0.05) {
+        spliceRejects += add.length;
+        return have.length > 2000 ? have.slice(-2000) : have;
+      }
+    }
+
     const map = new Map();
-    (existing || []).forEach(c => map.set(c.time, c));
-    (incoming || []).forEach(c => map.set(c.time, c));
+    have.forEach(c => map.set(c.time, c));
+    add.forEach(c => map.set(c.time, c));
     const merged = Array.from(map.values()).sort((a, b) => a.time - b.time);
     return merged.length > 2000 ? merged.slice(-2000) : merged;
   }
 
-  function ingestHistory(candles, samplePrice) {
+  function ingestHistory(candles, samplePrice, pkt) {
     if (!candles || candles.length === 0) return;
 
-    globalHistoryPool.unshift({ candles: candles, samplePrice: samplePrice });
+    pkt = pkt || {};
+    globalHistoryPool.unshift({
+      candles: candles, samplePrice: samplePrice,
+      tokens: pkt.tokens || [], prefix: pkt.prefix || ""
+    });
     if (globalHistoryPool.length > 35) globalHistoryPool.pop();
 
-    // The 0.25 band is wide — EUR/USD at 1.08 and GBP/USD at 1.26 are
-    // only 17% apart, so history can be filed under the wrong asset.
-    // Do not tighten it: the canvas-scraped price can be briefly stale
-    // and a narrow band would break hydration. Instead record HOW FAR
-    // off each match was, so a bad attribution stays filterable in
-    // analysis rather than silently poisoning a row.
-    if (state.livePrice !== null && Math.abs(samplePrice - state.livePrice) / state.livePrice <= 0.25) {
-      const dist = Math.abs(samplePrice - state.livePrice) / state.livePrice;
-      state.matchDist = Math.max(state.matchDist || 0, Number(dist.toFixed(6)));
-      state.candles1m = mergeCandleArrays(state.candles1m, candles);
-      reconcilePendingTrades(activeAsset, state.candles1m, state.currentCandle?.time);
-      saveVault();
-      updateUI();
-      return;
-    }
-
+    // ---- 1. SYMBOL MATCH (authoritative) --------------------------
+    // Until v1.4.53 the owning asset was guessed from price proximity
+    // within 25%. AUD/JPY and CAD/JPY trade 0.5% apart, so with many
+    // assets loaded that reliably filed one pair's history under
+    // another: CAD/CHF and NZD/CAD ended up sharing 178 bars with
+    // identical closes. A spliced series looks like noise, which
+    // quietly turns every measurement into ~50%.
     for (const [name, data] of assetVault.entries()) {
-      if (data.livePrice !== null && Math.abs(samplePrice - data.livePrice) / data.livePrice <= 0.25) {
-        const dist = Math.abs(samplePrice - data.livePrice) / data.livePrice;
-        data.matchDist = Math.max(data.matchDist || 0, Number(dist.toFixed(6)));
-        data.candles1m = mergeCandleArrays(data.candles1m, candles);
-        reconcilePendingTrades(name, data.candles1m, data.currentCandle?.time);
-        saveVault();
-        if (name === activeAsset) {
-          updateUI();
-        }
+      if (packetOwnedBy(pkt, name)) {
+        applyHistory(name, data, candles, 0, "symbol");
         return;
       }
     }
+
+    // ---- 2. PRICE FALLBACK, but only when UNAMBIGUOUS -------------
+    // No symbol in the frame. Rather than guess, require exactly one
+    // asset within a tight band — if two could own it, drop the packet.
+    // Losing history is recoverable; poisoning a series is not.
+    const TOL = 0.02;
+    const cands = [];
+    for (const [name, data] of assetVault.entries()) {
+      if (data.livePrice === null || !(data.livePrice > 0)) continue;
+      const dist = Math.abs(samplePrice - data.livePrice) / data.livePrice;
+      if (dist <= TOL) cands.push({ name, data, dist });
+    }
+    if (cands.length === 1) {
+      applyHistory(cands[0].name, cands[0].data, candles, cands[0].dist, "price");
+    } else {
+      unattributedHistory++;
+    }
+  }
+
+  // Does this history packet identify itself as belonging to `assetName`?
+  // Checks each token separately so "EURUSD" cannot match an OTC frame
+  // (or vice versa) just because one string contains the other.
+  function packetOwnedBy(pkt, assetName) {
+    if (!pkt) return false;
+    const m = String(assetName).match(/([A-Z]{3})\/([A-Z]{3})/i);
+    if (!m) return false;
+    const pair = (m[1] + m[2]).toUpperCase();
+    const wantOtc = /\(OTC\)/i.test(assetName);
+    const toks = (pkt.tokens || []).concat([pkt.prefix || ""]);
+    for (const t of toks) {
+      const n = String(t).toUpperCase().replace(/[^A-Z0-9]/g, "");
+      if (!n.includes(pair)) continue;
+      if (n.includes("OTC") === wantOtc) return true;
+    }
+    return false;
+  }
+
+  function applyHistory(name, data, candles, dist, mode) {
+    // Even a confident match gets a sanity check: history whose price
+    // level is nowhere near this asset's own is not this asset's.
+    if (data.livePrice > 0 && candles.length) {
+      const last = candles[candles.length - 1].close;
+      if (last > 0 && Math.abs(last - data.livePrice) / data.livePrice > 0.35) {
+        unattributedHistory++;
+        return;
+      }
+    }
+    data.matchDist = Math.max(data.matchDist || 0, Number(dist.toFixed(6)));
+    data.matchMode = mode;
+    data.candles1m = mergeCandleArrays(data.candles1m, candles);
+    reconcilePendingTrades(name, data.candles1m, data.currentCandle?.time);
+    saveVault();
+    if (name === activeAsset) updateUI();
   }
 
   function getAggregate(candles, current, periodMin) {
@@ -1374,7 +1468,8 @@
         breakEven: null,
 
         source: "harvest",
-        matchDist
+        matchDist,
+        matchMode: data.matchMode || null
       });
 
       prevRsi = rsi;
@@ -2544,7 +2639,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.52 [S: v1.0]</small>
+          <strong>QX Assistant</strong> <small>v1.4.53 [S: v1.0]</small>
           <span id="qx-tel-pill" title="Signal telemetry records stored locally (click to export CSV)">
             &#9679; <span id="qx-tel-count">0</span><span id="qx-tel-settled"></span>
           </span>
@@ -2946,6 +3041,27 @@
     function refreshTelemetryPill() {
       const tel = TEL();
       if (!tel) return;
+
+      // Attribution health. Before v1.4.53 a mis-filed history packet
+      // left no trace at all; now anything the symbol match could not
+      // claim is counted rather than guessed at.
+      const pill = document.getElementById("qx-tel-pill");
+      if (pill) {
+        const modes = {};
+        for (const [, d] of assetVault.entries()) {
+          const m = d.matchMode || "unknown";
+          modes[m] = (modes[m] || 0) + 1;
+        }
+        const byMode = Object.keys(modes).map(k => `${modes[k]} ${k}`).join(", ") || "none";
+        pill.title =
+          `Signal telemetry stored locally (click to export CSV).\n\n`
+          + `History attribution: ${byMode}.\n`
+          + `${unattributedHistory} packet(s) dropped as unattributable, `
+          + `${spliceRejects} bar(s) rejected for an impossible 1m move.\n\n`
+          + (unattributedHistory > 0 || spliceRejects > 0
+              ? `Non-zero is healthy: these were silently mis-filed before v1.4.53.`
+              : `Clean.`);
+      }
       tel.count().then(n => {
         telemetryCount = n;
         const el = document.getElementById("qx-tel-count");
@@ -3122,7 +3238,8 @@
         breakEven: activeTabPayout ? Number((1 / (1 + activeTabPayout)).toFixed(6)) : null,
 
         source: "live",
-        matchDist: state.matchDist !== undefined ? state.matchDist : null
+        matchDist: state.matchDist !== undefined ? state.matchDist : null,
+        matchMode: state.matchMode || null
       };
 
       tel.record(row).then(ok => {
@@ -3336,7 +3453,7 @@
     if (e.data?.type === "QX_FAST_PRICE_TICK") {
       ingestFastTick(e.data.payload.price, e.data.payload.rawText, e.data.payload.decimals, e.data.payload.timestamp);
     } else if (e.data?.type === "QX_HISTORICAL_CANDLES") {
-      ingestHistory(e.data.payload.candles, e.data.payload.samplePrice);
+      ingestHistory(e.data.payload.candles, e.data.payload.samplePrice, e.data.payload);
     }
   });
 })();

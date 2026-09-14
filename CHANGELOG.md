@@ -1,6 +1,61 @@
 # Changelog
 
-## 1.4.52-sr-reversal-scan (Current)
+## 1.4.53-symbol-attribution (Current)
+Status: CRITICAL DATA FIX — invalidates all measurements up to v1.4.52
+
+### History was being filed under the wrong asset
+`page-hook.js` extracted the candle array from each WebSocket frame and threw
+the rest of the envelope away — including the symbol. With no symbol,
+`ingestHistory` had to *guess* the owning asset from price proximity within
+**25%**. AUD/JPY and CAD/JPY trade 0.5% apart.
+
+Evidence from the contaminated store:
+
+- **CAD/CHF (OTC) and NZD/CAD (OTC) shared 178 bars with identical closes.**
+- AUD/JPY drifted 110.128 → 88.564 with a **30.2%** gap between consecutive
+  1m bars; AUD/NZD (OTC) had a **107,853%** jump.
+- **12 of 20 loaded pairs** sat inside the 25% band.
+
+With four assets this mostly held. At twenty it collapsed. A series stitched
+from two instruments behaves like noise — which produces ~50% on everything
+regardless of whether an edge exists. **Every measurement through v1.4.52 is
+therefore unreliable**, including the confluence-engine verdict and the S/R
+reversal scan. Not necessarily wrong; unproven.
+
+### Fixed
+- `page-hook.js` now forwards `tokens` (every non-candle string/small integer
+  in the frame) and the socket event `prefix`. Also exposes
+  `window.__QX_LAST_HISTORY_META__` for diagnosis.
+- Attribution is now **symbol-first**: each token is checked individually so
+  `EURUSD` cannot match an OTC frame, or vice versa.
+- Price fallback only when **unambiguous** — exactly one asset within 2%. If
+  two could own the packet it is dropped. Losing history is recoverable;
+  poisoning a series is not.
+- `mergeCandleArrays` rejects a foreign block **whole** when its median price
+  is >5% from the existing series. Trimming just the bar at the seam would
+  remove the visible discontinuity while leaving the other instrument's bars
+  in place — hiding the splice rather than removing it.
+- Zero and non-finite prices dropped.
+- `matchMode` telemetry column appended (`"symbol"` / `"price"` / null for
+  pre-v1.4.53 rows). `SCHEMA_VERSION` → 4.
+- Telemetry pill tooltip reports attribution health: how each asset was
+  matched, packets dropped as unattributable, bars rejected for an impossible
+  1m move.
+
+### Verified
+15 symbol-attribution cases including both real collisions (AUD/JPY ↔ CAD/JPY,
+CAD/CHF ↔ NZD/CAD) and OTC/non-OTC separation; the splice guard rejecting a
+foreign block whole with no bar leaking through; clean series passing intact.
+Harvest regression re-run: no scoring drift, 50.4% on a random walk.
+
+### Existing telemetry is contaminated
+All 15k+ stored rows predate this fix. Wipe with
+`__QX_TELEMETRY__.wipe("YES")` in the console, reload assets, and re-harvest
+before drawing any conclusion.
+
+---
+
+## 1.4.52-sr-reversal-scan
 Status: HYPOTHESIS TEST
 
 The classic-5pt confluence engine is **dead** — 50.3% over 4,694 decided OTC

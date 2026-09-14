@@ -118,6 +118,35 @@
     return null;
   }
 
+  // Every string/number in the frame that is NOT candle data. The
+  // symbol this history belongs to is in here; throwing the whole
+  // envelope away (as this did until v1.4.53) forced the ISOLATED side
+  // to guess the owner by price proximity, which silently filed one
+  // pair's history under another whenever two pairs traded at similar
+  // levels — AUD/JPY and CAD/JPY are 0.5% apart.
+  function collectTokens(data, out, depth) {
+    depth = depth || 0;
+    if (!data || depth > 6 || out.length > 40) return out;
+    if (Array.isArray(data)) {
+      // skip OHLC payloads; a candle row is a numeric tuple or an
+      // object carrying close/c
+      if (data.length >= 8) return out;
+      for (const v of data) collectTokens(v, out, depth + 1);
+      return out;
+    }
+    if (typeof data === "object") {
+      for (const k of Object.keys(data)) {
+        const v = data[k];
+        if (typeof v === "string" && v.length > 1 && v.length <= 40) out.push(v);
+        else if (typeof v === "number" && Number.isFinite(v)) {
+          // ids are small integers; prices and epochs are not useful here
+          if (Number.isInteger(v) && v > 0 && v < 100000) out.push(k + "=" + v);
+        } else if (typeof v === "object") collectTokens(v, out, depth + 1);
+      }
+    }
+    return out;
+  }
+
   function handleIncoming(raw) {
     try {
       let str = typeof raw === "string" ? raw : new TextDecoder().decode(raw);
@@ -133,10 +162,24 @@
       const candles = deepSearch(parsed);
       if (candles && candles.length >= 8) {
         const samplePrice = candles[candles.length - 1].close;
-        const pkt = { candles: candles, samplePrice: samplePrice, time: Date.now() };
+        const tokens = collectTokens(parsed, []);
+        // the socket frame is often prefixed with an event name such as
+        // 42["history/list",{...}] — keep it, it can carry the symbol
+        const prefix = str.substring(0, Math.min(start, 48));
+        const pkt = {
+          candles: candles,
+          samplePrice: samplePrice,
+          time: Date.now(),
+          tokens: tokens,
+          prefix: prefix
+        };
 
         historyRing.unshift(pkt);
         if (historyRing.length > 35) historyRing.pop();
+
+        // exposed read-only so attribution problems can be diagnosed
+        // without re-instrumenting the socket
+        window.__QX_LAST_HISTORY_META__ = { tokens: tokens, prefix: prefix, bars: candles.length };
 
         window.postMessage({ type: "QX_HISTORICAL_CANDLES", payload: pkt }, "*");
       }

@@ -72,10 +72,19 @@
     //     ingestHistory accepts anything within 25%, which is wide
     //     enough to file GBP/USD history under EUR/USD, so this is
     //     what makes a bad attribution filterable after the fact.
-    "source", "matchDist"
+    "source", "matchDist",
+    // --- v1.4.53: appended, never reordered -----------------------
+    //     How this asset's history was attributed:
+    //       "symbol" - the frame named the pair. Trustworthy.
+    //       "price"  - inferred from price proximity, unambiguously.
+    //       undefined on rows captured before v1.4.53, which were
+    //                  attributed by a 25% price band wide enough to
+    //                  file one pair's history under another. Those
+    //                  rows are NOT trustworthy; filter them out.
+    "matchMode"
   ];
 
-  const SCHEMA_VERSION = 3;
+  const SCHEMA_VERSION = 4;
 
   let dbPromise = null;
   let cachedCount = 0;
