@@ -1,9 +1,11 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.4.43",
-  "description": "High-performance assistant with Canvas price feed, dynamic tab detection, clean session-based logging, and native OpenXML export.",
-  "permissions": ["storage"],
+  "version": "1.4.44",
+  "description": "High-performance analysis assistant with Canvas price feed, multi-timeframe confluence scoring, and local-only signal telemetry for strategy measurement.",
+  "permissions": [
+    "storage"
+  ],
   "host_permissions": [
     "*://*.quotex.com/*",
     "*://*.qxbroker.com/*",
@@ -22,7 +24,9 @@
         "*://*.broker-qx.pro/*",
         "*://*.quotex-market.com/*"
       ],
-      "js": ["page-hook.js"],
+      "js": [
+        "page-hook.js"
+      ],
       "run_at": "document_start",
       "world": "MAIN"
     },
@@ -35,9 +39,15 @@
         "*://*.broker-qx.pro/*",
         "*://*.quotex-market.com/*"
       ],
-      "js": ["content.js"],
-      "css": ["styles.css"],
-      "run_at": "document_start"
+      "js": [
+        "telemetry.js",
+        "content.js"
+      ],
+      "css": [
+        "styles.css"
+      ],
+      "run_at": "document_start",
+      "world": "ISOLATED"
     }
   ]
 }

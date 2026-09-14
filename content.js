@@ -19,6 +19,122 @@
   const globalHistoryPool = [];
   const backtestCache = new Map();
 
+  // ==============================================================
+  // TELEMETRY PLUMBING (v1.4.44) — OBSERVES ONLY
+  // Nothing below this comment may influence a signal. Every call
+  // into the telemetry layer is fire-and-forget and swallowed, so a
+  // storage failure can never alter or delay the live verdict.
+  // ==============================================================
+  const TEL = () => window.__QX_TELEMETRY__ || null;
+
+  // Rolling ~90s ring of raw canvas ticks: {t, p}. Used only to derive
+  // microstructure features at lock time.
+  const tickRing = [];
+  const TICK_RING_MS = 90000;
+
+  let lastTickTs = 0;
+  let telemetryCount = 0;
+  let telemetrySettled = 0;
+
+  function pushTick(price, time) {
+    tickRing.push({ t: time, p: price });
+    const cutoff = time - TICK_RING_MS;
+    while (tickRing.length && tickRing[0].t < cutoff) tickRing.shift();
+    lastTickTs = time;
+  }
+
+  function tickStats(now) {
+    const out = {
+      tick5s: 0, tick10s: 0, tick60s: 0,
+      tickUp10s: 0, tickDown10s: 0, tickImb10s: 0,
+      range5s: 0, range60s: 0, range5sPct: 0
+    };
+    if (tickRing.length === 0) return out;
+
+    let hi5 = -Infinity, lo5 = Infinity, hi60 = -Infinity, lo60 = Infinity;
+    let prev10 = null;
+
+    for (let i = 0; i < tickRing.length; i++) {
+      const tk = tickRing[i];
+      const age = now - tk.t;
+      if (age <= 60000) {
+        out.tick60s++;
+        if (tk.p > hi60) hi60 = tk.p;
+        if (tk.p < lo60) lo60 = tk.p;
+      }
+      if (age <= 10000) {
+        out.tick10s++;
+        if (prev10 !== null) {
+          if (tk.p > prev10) out.tickUp10s++;
+          else if (tk.p < prev10) out.tickDown10s++;
+        }
+        prev10 = tk.p;
+      }
+      if (age <= 5000) {
+        out.tick5s++;
+        if (tk.p > hi5) hi5 = tk.p;
+        if (tk.p < lo5) lo5 = tk.p;
+      }
+    }
+
+    if (hi5 > -Infinity && lo5 < Infinity) out.range5s = hi5 - lo5;
+    if (hi60 > -Infinity && lo60 < Infinity) out.range60s = hi60 - lo60;
+
+    const dirTotal = out.tickUp10s + out.tickDown10s;
+    if (dirTotal > 0) {
+      out.tickImb10s = Number(((out.tickUp10s - out.tickDown10s) / dirTotal).toFixed(4));
+    }
+
+    const lastPrice = tickRing[tickRing.length - 1].p;
+    if (lastPrice > 0 && out.range5s > 0) {
+      out.range5sPct = Number(((out.range5s / lastPrice) * 100).toFixed(6));
+    }
+    return out;
+  }
+
+  function calcATR(candles, period = 14) {
+    if (!candles || candles.length < period + 1) return null;
+    const slice = candles.slice(-(period + 1));
+    let sum = 0;
+    for (let i = 1; i < slice.length; i++) {
+      const c = slice[i], prev = slice[i - 1];
+      sum += Math.max(
+        c.high - c.low,
+        Math.abs(c.high - prev.close),
+        Math.abs(c.low - prev.close)
+      );
+    }
+    return sum / period;
+  }
+
+  function calcStdev(candles, period = 20) {
+    if (!candles || candles.length < period + 1) return null;
+    const slice = candles.slice(-(period + 1));
+    const rets = [];
+    for (let i = 1; i < slice.length; i++) {
+      if (slice[i - 1].close > 0) {
+        rets.push((slice[i].close - slice[i - 1].close) / slice[i - 1].close);
+      }
+    }
+    if (rets.length < 2) return null;
+    const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+    const variance = rets.reduce((a, b) => a + (b - mean) * (b - mean), 0) / (rets.length - 1);
+    return Math.sqrt(variance);
+  }
+
+  // Missing minutes inside the last 20 bars — a data-integrity read.
+  // A signal computed over a gappy window is not the same signal.
+  function countGaps(candles, lookback = 20) {
+    if (!candles || candles.length < 2) return 0;
+    const slice = candles.slice(-lookback);
+    let gaps = 0;
+    for (let i = 1; i < slice.length; i++) {
+      const step = slice[i].time - slice[i - 1].time;
+      if (step > 60000) gaps += Math.round(step / 60000) - 1;
+    }
+    return gaps;
+  }
+
   const syncChannel = ("BroadcastChannel" in window) ? new BroadcastChannel("QX_CROSS_WINDOW_SYNC") : null;
 
   let tradeLog = [];
@@ -483,6 +599,8 @@
     state.rawPrice = rawText;
     if (decimals !== undefined) state.decimals = decimals;
 
+    pushTick(price, time);
+
     if (state.candles1m.length < 20) {
       tryHydrateCandles();
     }
@@ -510,6 +628,21 @@
       if (state.candles1m.length > 2000) state.candles1m.shift();
 
       reconcilePendingTrades(activeAsset, state.candles1m, minFloor);
+
+      // --- TELEMETRY: settle the bar that just closed, and stamp the
+      // rollover tick price onto the evaluation locked 5s ago. Both are
+      // fire-and-forget; neither gates the trade queuing below.
+      try {
+        const tel = TEL();
+        if (tel) {
+          tel.settle(activeAsset, finishedCandle.time, finishedCandle);
+          const wasExecuted = !!(state.activeSignal &&
+            state.activeSignal.dir !== "NONE" &&
+            !state.activeFlipped &&
+            state.evalMinute === finishedCandle.time);
+          tel.setEntryTick(activeAsset, minFloor, price, wasExecuted);
+        }
+      } catch (_) {}
 
       if (state.activeSignal && state.activeSignal.dir !== "NONE" && !state.activeFlipped && state.evalMinute === finishedCandle.time) {
         const tradeId = `${activeAsset}_${minFloor}`;
@@ -643,16 +776,20 @@
       }
     }
 
+    // rawCall / rawPut are the UNROUNDED scores. Added in v1.4.44 for
+    // telemetry only — the displayed `score` and every tier threshold
+    // below are unchanged. A 3.5 still renders as "4 / 5" live; the raw
+    // value is what gets logged, so analysis sees the real number.
     if (callScore >= 3.5 && callScore > putScore) {
-      return { setup: "STRONG BUY", score: Math.min(5, Math.round(callScore)), color: "#10b981", dir: "CALL", tier: "STRONG" };
+      return { setup: "STRONG BUY", score: Math.min(5, Math.round(callScore)), color: "#10b981", dir: "CALL", tier: "STRONG", rawCall: callScore, rawPut: putScore };
     } else if (putScore >= 3.5 && putScore > callScore) {
-      return { setup: "STRONG PUT", score: Math.min(5, Math.round(putScore)), color: "#ef4444", dir: "PUT", tier: "STRONG" };
+      return { setup: "STRONG PUT", score: Math.min(5, Math.round(putScore)), color: "#ef4444", dir: "PUT", tier: "STRONG", rawCall: callScore, rawPut: putScore };
     } else if (callScore >= 2.5 && callScore > putScore) {
-      return { setup: "CALL Bias", score: Math.round(callScore), color: "#34d399", dir: "CALL", tier: "BIAS" };
+      return { setup: "CALL Bias", score: Math.round(callScore), color: "#34d399", dir: "CALL", tier: "BIAS", rawCall: callScore, rawPut: putScore };
     } else if (putScore >= 2.5 && putScore > callScore) {
-      return { setup: "PUT Bias", score: Math.round(putScore), color: "#f87171", dir: "PUT", tier: "BIAS" };
+      return { setup: "PUT Bias", score: Math.round(putScore), color: "#f87171", dir: "PUT", tier: "BIAS", rawCall: callScore, rawPut: putScore };
     } else {
-      return { setup: "Neutral", score: Math.max(callScore, putScore).toFixed(0), color: "#94a3b8", dir: "NONE", tier: "NONE" };
+      return { setup: "Neutral", score: Math.max(callScore, putScore).toFixed(0), color: "#94a3b8", dir: "NONE", tier: "NONE", rawCall: callScore, rawPut: putScore };
     }
   }
 
@@ -683,16 +820,20 @@
       }
     }
 
+    // rawCall / rawPut are the UNROUNDED scores. Added in v1.4.44 for
+    // telemetry only — the displayed `score` and every tier threshold
+    // below are unchanged. A 3.5 still renders as "4 / 5" live; the raw
+    // value is what gets logged, so analysis sees the real number.
     if (callScore >= 3.5 && callScore > putScore) {
-      return { setup: "STRONG BUY", score: Math.min(5, Math.round(callScore)), color: "#10b981", dir: "CALL", tier: "STRONG" };
+      return { setup: "STRONG BUY", score: Math.min(5, Math.round(callScore)), color: "#10b981", dir: "CALL", tier: "STRONG", rawCall: callScore, rawPut: putScore };
     } else if (putScore >= 3.5 && putScore > callScore) {
-      return { setup: "STRONG PUT", score: Math.min(5, Math.round(putScore)), color: "#ef4444", dir: "PUT", tier: "STRONG" };
+      return { setup: "STRONG PUT", score: Math.min(5, Math.round(putScore)), color: "#ef4444", dir: "PUT", tier: "STRONG", rawCall: callScore, rawPut: putScore };
     } else if (callScore >= 2.5 && callScore > putScore) {
-      return { setup: "CALL Bias", score: Math.round(callScore), color: "#34d399", dir: "CALL", tier: "BIAS" };
+      return { setup: "CALL Bias", score: Math.round(callScore), color: "#34d399", dir: "CALL", tier: "BIAS", rawCall: callScore, rawPut: putScore };
     } else if (putScore >= 2.5 && putScore > callScore) {
-      return { setup: "PUT Bias", score: Math.round(putScore), color: "#f87171", dir: "PUT", tier: "BIAS" };
+      return { setup: "PUT Bias", score: Math.round(putScore), color: "#f87171", dir: "PUT", tier: "BIAS", rawCall: callScore, rawPut: putScore };
     } else {
-      return { setup: "Neutral", score: Math.max(callScore, putScore).toFixed(0), color: "#94a3b8", dir: "NONE", tier: "NONE" };
+      return { setup: "Neutral", score: Math.max(callScore, putScore).toFixed(0), color: "#94a3b8", dir: "NONE", tier: "NONE", rawCall: callScore, rawPut: putScore };
     }
   }
 
@@ -1663,7 +1804,10 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.43 [S: v1.0]</small>
+          <strong>QX Assistant</strong> <small>v1.4.44 [S: v1.0]</small>
+          <span id="qx-tel-pill" title="Signal telemetry records stored locally (click to export CSV)">
+            &#9679; <span id="qx-tel-count">0</span><span id="qx-tel-settled"></span>
+          </span>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-sound-strong" class="qx-audio-btn" title="Toggle Strong Alerts (Triple Fanfare x3)">${strongSoundEnabled ? "S:🔊" : "S:🔇"}</button>
@@ -1920,6 +2064,41 @@
       bodyEl.style.display = isHidden ? "block" : "none";
     });
 
+    // --- TELEMETRY PILL: live record count, click to export CSV ---
+    const telPill = document.getElementById("qx-tel-pill");
+    if (telPill) {
+      telPill.addEventListener("click", () => {
+        const tel = TEL();
+        if (!tel) return;
+        const label = document.getElementById("qx-tel-count");
+        const prev = label ? label.textContent : "";
+        if (label) label.textContent = "...";
+        tel.exportCsv().then(n => {
+          if (label) label.textContent = prev;
+          console.log(`[QX] Exported ${n} telemetry rows.`);
+        }).catch(() => {
+          if (label) label.textContent = prev;
+        });
+      });
+    }
+
+    function refreshTelemetryPill() {
+      const tel = TEL();
+      if (!tel) return;
+      tel.count().then(n => {
+        telemetryCount = n;
+        const el = document.getElementById("qx-tel-count");
+        if (el) el.textContent = n;
+      }).catch(() => {});
+      tel.countSettled().then(n => {
+        telemetrySettled = n;
+        const el = document.getElementById("qx-tel-settled");
+        if (el) el.textContent = n > 0 ? ` (${n}✓)` : "";
+      }).catch(() => {});
+    }
+    refreshTelemetryPill();
+    setInterval(refreshTelemetryPill, 15000);
+
     const found = getActiveTabFromDOM();
     if (found && found !== activeAsset) switchAsset(found);
 
@@ -1935,6 +2114,156 @@
     if (document.getElementById("qx-assistant-panel")) clearInterval(checkTimer);
     else mountUI();
   }, 400);
+
+  // ==============================================================
+  // TELEMETRY CAPTURE (v1.4.44)
+  // Called once per minute at the :55 lock, for EVERY evaluation —
+  // STRONG, BIAS and NEUTRAL alike. The neutrals are the control
+  // group; without them there is no way to tell whether a component
+  // predicts direction or merely correlates with taking a trade.
+  // ==============================================================
+  function captureTelemetry(ctx) {
+    const tel = TEL();
+    if (!tel) return;
+
+    try {
+      const {
+        cleanCandles, m5List, m15List, rsi, sr,
+        trend15m, trend5m, verdict, evalMinute
+      } = ctx;
+
+      const now = Date.now();
+      const tradeMinute = evalMinute + 60000;
+      const price = state.livePrice;
+      const closed = state.currentCandle ? cleanCandles.slice(0, -1) : cleanCandles.slice();
+
+      // ---- SHADOW: last fully CLOSED 15m bar, vs the forming one the
+      // live signal uses. Logged side by side so the question of which
+      // one actually predicts gets settled by data, not by argument.
+      const block15 = Math.floor(now / 900000) * 900000;
+      const closed15 = m15List.filter(b => b.time < block15);
+      let trend15Closed = "Neutral";
+      if (closed15.length >= 1) {
+        const last = closed15[closed15.length - 1];
+        trend15Closed = last.close >= last.open ? "Bullish" : "Bearish";
+      }
+
+      const block5 = Math.floor(now / 300000) * 300000;
+      const closed5 = m5List.filter(b => b.time < block5);
+      let trend5Closed = "Neutral";
+      if (closed5.length >= 2) {
+        const cur = closed5[closed5.length - 1];
+        const prev = closed5[closed5.length - 2];
+        trend5Closed = cur.close >= prev.close ? "Bullish" : "Bearish";
+      }
+
+      const rsiClosed = calcRSI(closed, 14);
+
+      // ---- SHADOW: wick-aware S/R distance (what the backtester uses)
+      // alongside the price-based distance (what the live signal uses).
+      // This asymmetry is exactly why backtest and forward numbers have
+      // never been comparable.
+      let distSupPrice = null, distResPrice = null;
+      let distSupWick = null, distResWick = null;
+      if (sr.s !== null && sr.r !== null) {
+        const range = sr.r - sr.s;
+        if (range > 0) {
+          if (price !== null) {
+            distSupPrice = Number(((price - sr.s) / range).toFixed(6));
+            distResPrice = Number(((sr.r - price) / range).toFixed(6));
+          }
+          const fc = state.currentCandle;
+          if (fc) {
+            distSupWick = Number(((fc.low - sr.s) / range).toFixed(6));
+            distResWick = Number(((sr.r - fc.high) / range).toFixed(6));
+          }
+        }
+      }
+
+      const atr = calcATR(closed, 14);
+      const sd = calcStdev(closed, 20);
+      const ticks = tickStats(now);
+      const d = new Date(now);
+
+      const row = {
+        id: `${activeAsset}_${tradeMinute}`,
+        asset: activeAsset,
+        isOtc: /\(OTC\)/i.test(activeAsset) ? 1 : 0,
+        decimals: state.decimals !== undefined ? state.decimals : 3,
+
+        evalTs: now,
+        evalMinute: evalMinute,
+        tradeMinute: tradeMinute,
+        localHour: d.getHours(),
+        localMinute: d.getMinutes(),
+        minuteOfDay: d.getHours() * 60 + d.getMinutes(),
+        dayOfWeek: d.getDay(),
+        utcHour: d.getUTCHours(),
+
+        lockPrice: price,
+        dir: verdict.dir,
+        tier: verdict.tier,
+        setup: verdict.setup,
+        score: verdict.score,
+        rawCall: verdict.rawCall,
+        rawPut: verdict.rawPut,
+
+        trend15: trend15m,
+        trend5: trend5m,
+        rsi: rsi !== null ? Number(rsi.toFixed(4)) : null,
+        srS: sr.s,
+        srR: sr.r,
+        srRange: (sr.s !== null && sr.r !== null) ? Number((sr.r - sr.s).toFixed(8)) : null,
+        distSupPrice, distResPrice,
+
+        trend15Closed, trend5Closed,
+        rsiClosed: rsiClosed !== null ? Number(rsiClosed.toFixed(4)) : null,
+        distSupWick, distResWick,
+        m15BlockPos: Math.floor((now % 900000) / 60000),
+        m15BarsClosed: closed15.length,
+
+        atr14: atr !== null ? Number(atr.toFixed(8)) : null,
+        atrPct: (atr !== null && price) ? Number(((atr / price) * 100).toFixed(6)) : null,
+        stdev20: sd !== null ? Number(sd.toFixed(10)) : null,
+        stdev20Pct: sd !== null ? Number((sd * 100).toFixed(6)) : null,
+
+        count1m: cleanCandles.length,
+        count5m: m5List.length,
+        count15m: m15List.length,
+        gapCount20: countGaps(closed, 20),
+        staleMs: lastTickTs ? (now - lastTickTs) : null,
+
+        tick5s: ticks.tick5s,
+        tick10s: ticks.tick10s,
+        tick60s: ticks.tick60s,
+        tickUp10s: ticks.tickUp10s,
+        tickDown10s: ticks.tickDown10s,
+        tickImb10s: ticks.tickImb10s,
+        range5s: ticks.range5s,
+        range60s: ticks.range60s,
+        range5sPct: ticks.range5sPct,
+
+        flipped: 0,
+        executed: 0,
+        settled: 0,
+        entryTick: null,
+        entryOpen: null,
+        exitClose: null,
+        nextHigh: null,
+        nextLow: null,
+        nextDir: null,
+        resolvedTs: null
+      };
+
+      tel.record(row).then(ok => {
+        if (ok) {
+          telemetryCount++;
+          const el = document.getElementById("qx-tel-count");
+          if (el) el.textContent = telemetryCount;
+        }
+      });
+    } catch (_) {}
+  }
 
   // ==============================================================
   // ANALYSIS, FLIP GATE & SIGNAL LOCK
@@ -2015,6 +2344,15 @@
         } else if (state.activeSignal.tier === "BIAS" && biasSoundEnabled) {
           playAlert("BIAS", state.activeSignal.dir);
         }
+
+        // TELEMETRY: capture every locked evaluation, neutrals included.
+        // Placed AFTER the signal is committed above so it cannot affect it.
+        captureTelemetry({
+          cleanCandles, m5List, m15List, rsi, sr,
+          trend15m, trend5m,
+          verdict: liveVerdict,
+          evalMinute: currentMinFloor
+        });
       }
 
       if (msInMinute >= 58000 && state.activeSignal && state.activeSignal.dir !== "NONE") {
@@ -2022,7 +2360,18 @@
                            (state.activeSignal.dir === "PUT" && liveVerdict.dir !== "PUT") ||
                            (liveVerdict.score < 2);
         if (flippedNow) {
+          const wasAlreadyFlipped = state.activeFlipped;
           state.activeFlipped = true;
+          // TELEMETRY: record the flip-gate reject. These rows are the
+          // most interesting in the dataset — they are the trades the
+          // gate saved you from, and the only way to find out whether
+          // it is actually saving you anything.
+          if (!wasAlreadyFlipped) {
+            try {
+              const tel = TEL();
+              if (tel) tel.markFlipped(activeAsset, currentMinFloor + 60000);
+            } catch (_) {}
+          }
         }
       }
 

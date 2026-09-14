@@ -485,3 +485,31 @@
   font-weight: 700;
   font-size: 8.5px;
 }
+/* ==============================================================
+   TELEMETRY PILL (v1.4.44)
+   ============================================================== */
+#qx-tel-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 9px;
+  background: #1b2233;
+  border: 1px solid #2d3748;
+  color: #64748b;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+#qx-tel-pill:hover {
+  background: #243049;
+  border-color: #38bdf8;
+  color: #38bdf8;
+}
+#qx-tel-count { color: #94a3b8; font-family: ui-monospace, Menlo, Consolas, monospace; }
+#qx-tel-pill:hover #qx-tel-count { color: #7dd3fc; }
+#qx-tel-settled { color: #34d399; font-family: ui-monospace, Menlo, Consolas, monospace; }
