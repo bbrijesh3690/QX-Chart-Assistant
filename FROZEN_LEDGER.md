@@ -10,6 +10,7 @@
 | **v1.4.40** | `v1.4.40-frozen` | Platform Baseline + Signal Confluence v1.0.0-classic5pt | Milestone 6 |
 | **v1.4.43** | (baseline commit) | Canvas Price Ticks, Dynamic Wide Tab Detection, Session Lifecycle | Milestone 7 |
 | **v1.4.45** | `v1.4.45-frozen` | Last version with the divergent backtest S/R probe. Frozen before unifying the scoring paths. | Milestone 8 |
+| **v1.4.48** | `v1.4.48-frozen` | Unified scoring, Wilson intervals, forward-log integrity, 15x backtest. First version where both tabs measure one strategy. | Milestone 9 |
 
 ## Measurement baseline
 
@@ -40,6 +41,31 @@ Two differences remain and are **not fixable** with 1m OHLC history alone:
 the backtester evaluates a fully closed bar where the live path locks at `:55`
 on a partially formed one, and the backtester cannot model the `:58` flip gate.
 Live results are therefore a subset of backtest signals, not a replica.
+
+### v1.4.48 — measurement baseline for the decision gate
+
+Milestone 9 is the first version in which `Forward.test` and `Backward.test`
+run the same arithmetic, report Wilson intervals rather than bare percentages,
+and do not silently lose settled trades. It is the version the decision gate in
+`CLAUDE.md` should be run against.
+
+Verified at freeze time, live on qxbroker.com:
+
+- live signal path byte-identical to v1.4.43 (mechanically checked, not
+  eyeballed — `evaluateConfluence` matches after normalising the
+  `price` → `srProbe` rename, and no lock/flip/queue line differs)
+- backtest optimisations output-identical to the pre-optimisation loop on both
+  clean and gap-injected data
+- asset detection tracks tab switches across all four open tabs
+- backtest accounting reconciles exactly: 108 traded + 70 neutral + 20 warmup
+  + 1 unevaluated = 199 bars
+- no extension errors in console
+
+**Known state of the forward log at this freeze.** Trades recorded before
+v1.4.46 are still valid as live results (the live path never changed), but the
+log has no `source` column to separate them. Any pre-v1.4.46 `Backward.test`
+figure written down elsewhere is void and must not be compared against numbers
+from this version.
 
 ## Standalone Backup Location
 
