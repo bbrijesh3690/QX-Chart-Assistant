@@ -461,6 +461,15 @@
   // ==============================================================
   // DYNAMIC ACTIVE TAB DETECTOR (SUPPORTS PnL BADGES & WIDE TABS)
   // ==============================================================
+  // v1.4.45: Quotex now renders asset tabs with hashed CSS-module
+  // classnames (e.g. "dJ15T vXMlv") that rotate on every build — none
+  // of them ever contain literal words like "active"/"selected", so the
+  // regex bonus below can go permanently silent and every tab ties on
+  // score, defaulting to the first one in DOM order regardless of which
+  // is actually selected. The structural check added below (an element
+  // carrying a class its sibling tabs don't share) still finds the
+  // active tab even when the class itself is meaningless, because
+  // Quotex still applies exactly one extra modifier class to it.
   function getActiveTabFromDOM() {
     const candidates = Array.from(document.querySelectorAll("div, a, button, li, span")).filter(el => {
       if (el.closest("#qx-assistant-panel")) return false;
@@ -470,9 +479,7 @@
 
     if (candidates.length === 0) return null;
 
-    let bestName = null;
-    let highestScore = -1;
-
+    const tabEls = [];
     for (const el of candidates) {
       let tabEl = el;
       for (let depth = 0; depth < 4 && tabEl && tabEl !== document.body; depth++) {
@@ -485,35 +492,84 @@
 
       if (!tabEl || tabEl === document.body) continue;
 
-      const r = tabEl.getBoundingClientRect();
+      let r = tabEl.getBoundingClientRect();
       if (r.top < 0 || r.top > 180 || r.height < 20 || r.height > 85 || r.width < 50 || r.width > 650) continue;
 
-      const rawText = tabEl.innerText || tabEl.textContent || "";
-      const parsed = formatCleanName(rawText);
-      if (!parsed) continue;
+      // Nested label/text wrapper divs often report a near-identical
+      // box to their parent tab button. Climb to the outermost one
+      // still occupying that box — that outer element is where Quotex
+      // attaches the active-state modifier class, not the inner text
+      // node the regex matched on.
+      let outer = tabEl;
+      for (let depth = 0; depth < 4 && outer.parentElement && outer.parentElement !== document.body; depth++) {
+        const parent = outer.parentElement;
+        const pr = parent.getBoundingClientRect();
+        const pText = parent.innerText || parent.textContent || "";
+        if (Math.abs(pr.top - r.top) > 6 || Math.abs(pr.width - r.width) > 40) break;
+        if (!/[A-Z]{3}\/[A-Z]{3}/i.test(pText)) break;
+        outer = parent;
+        r = pr;
+      }
+      tabEl = outer;
 
-      let score = 10;
-      const cls = (tabEl.className || "") + " " + (tabEl.getAttribute("aria-selected") || "") + " " + (tabEl.getAttribute("data-active") || "");
+      if (!tabEls.includes(tabEl)) tabEls.push(tabEl);
+    }
 
-      if (/(active|selected|current|tab--active|tabs__item--active|is-active)/i.test(cls)) {
-        score += 50;
-      }
-      if (tabEl.querySelector("button, svg, [class*='close'], [class*='cross']")) {
-        score += 30;
-      }
-      if (tabEl.querySelector("[class*='arrow'], [class*='chevron'], [class*='select']")) {
-        score += 40;
-      }
-      if (/[+\-]\s*[\d,]+\s*[₹$€£]/.test(rawText) || /[₹$€£]\s*[+\-]\s*[\d,]+/.test(rawText)) {
-        score += 45;
-      }
-      if (/\d{1,3}\s*%/.test(rawText)) {
-        score += 20;
+    if (tabEls.length === 0) return null;
+
+    // Group by parent so "does this tab have a class its siblings
+    // lack" is judged only against actual siblings, not the whole page.
+    const byParent = new Map();
+    for (const t of tabEls) {
+      const p = t.parentElement;
+      if (!byParent.has(p)) byParent.set(p, []);
+      byParent.get(p).push(t);
+    }
+
+    let bestName = null;
+    let highestScore = -1;
+
+    for (const siblings of byParent.values()) {
+      let commonClasses = null;
+      if (siblings.length > 1) {
+        for (const s of siblings) {
+          const cls = new Set((s.className || "").toString().split(/\s+/).filter(Boolean));
+          commonClasses = commonClasses === null ? cls : new Set([...commonClasses].filter(c => cls.has(c)));
+        }
       }
 
-      if (score > highestScore) {
-        highestScore = score;
-        bestName = parsed;
+      for (const tabEl of siblings) {
+        const rawText = tabEl.innerText || tabEl.textContent || "";
+        const parsed = formatCleanName(rawText);
+        if (!parsed) continue;
+
+        let score = 10;
+        const cls = (tabEl.className || "") + " " + (tabEl.getAttribute("aria-selected") || "") + " " + (tabEl.getAttribute("data-active") || "");
+
+        if (/(active|selected|current|tab--active|tabs__item--active|is-active)/i.test(cls)) {
+          score += 50;
+        }
+        if (commonClasses && siblings.length > 1) {
+          const ownClasses = (tabEl.className || "").toString().split(/\s+/).filter(Boolean);
+          if (ownClasses.some(c => !commonClasses.has(c))) score += 60;
+        }
+        if (tabEl.querySelector("button, svg, [class*='close'], [class*='cross']")) {
+          score += 30;
+        }
+        if (tabEl.querySelector("[class*='arrow'], [class*='chevron'], [class*='select']")) {
+          score += 40;
+        }
+        if (/[+\-]\s*[\d,]+\s*[₹$€£]/.test(rawText) || /[₹$€£]\s*[+\-]\s*[\d,]+/.test(rawText)) {
+          score += 45;
+        }
+        if (/\d{1,3}\s*%/.test(rawText)) {
+          score += 20;
+        }
+
+        if (score > highestScore) {
+          highestScore = score;
+          bestName = parsed;
+        }
       }
     }
 
@@ -1804,7 +1860,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.44 [S: v1.0]</small>
+          <strong>QX Assistant</strong> <small>v1.4.45 [S: v1.0]</small>
           <span id="qx-tel-pill" title="Signal telemetry records stored locally (click to export CSV)">
             &#9679; <span id="qx-tel-count">0</span><span id="qx-tel-settled"></span>
           </span>

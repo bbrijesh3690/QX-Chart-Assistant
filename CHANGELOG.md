@@ -1,6 +1,28 @@
 # Changelog
 
-## 1.4.44-telemetry (Current)
+## 1.4.45-assetfix (Current)
+Status: FIX
+
+### Fixed
+- Active-asset detection (`getActiveTabFromDOM`) was silently stuck on whichever
+  tab opened first. Quotex now renders asset tabs with hashed CSS-module
+  classnames that rotate every build (e.g. `dJ15T vXMlv`, with an extra `AmO6b`
+  only on the selected tab) — none of them contain literal words like
+  `active`/`selected` anymore, so the old regex-based bonus went permanently
+  silent and every tab tied on score, defaulting to DOM order.
+- Reproduced live against qxbroker.com and confirmed the fix: switching between
+  4 open OTC tabs (USD/IDR → USD/DZD → USD/MXN) now updates the detected asset
+  every time, instead of sticking on the first tab.
+- Fix is structural, not name-based: an element carrying a class its sibling
+  tabs don't share is scored as the active one, so it survives the next class
+  hash rotation too. Also normalizes nested near-identical-box wrapper divs to
+  the outer element that actually carries the state class.
+- No change to scoring, thresholds, or timing — this is DOM detection only,
+  outside the frozen signal path.
+
+---
+
+## 1.4.44-telemetry
 Status: COLLECTING
 
 ### Added
