@@ -90,9 +90,47 @@
   let cachedCount = 0;
   let lastCountAt = 0;
 
+  /* --------------------------------------------------------------
+     Session-scoped store (v1.4.60).
+
+     Nothing this extension records is meant to outlive the browser
+     session. On a stale heartbeat — no Quotex tab open for >15s, i.e.
+     the browser was closed — the whole database is deleted before it
+     is opened, so a new session always starts empty.
+
+     This file is injected BEFORE content.js, so the delete lands
+     before anything can hold the database open. Every later call
+     awaits it via openDb().
+
+     It also matters that this store lives on the QUOTEX origin, not
+     the extension's: IndexedDB is origin-scoped, so any script on
+     qxbroker.com can read it while it exists. Keeping it short-lived
+     is the point.
+     -------------------------------------------------------------- */
+  const wipeIfNewSession = (function () {
+    try {
+      const lastHb = parseInt(localStorage.getItem("__QX_SESSION_HEARTBEAT__") || "0", 10);
+      if (Date.now() - lastHb <= 15000) return Promise.resolve(false);
+    } catch (_) {
+      return Promise.resolve(false);
+    }
+    return new Promise(resolve => {
+      let done = false;
+      const finish = () => { if (!done) { done = true; resolve(true); } };
+      try {
+        const req = indexedDB.deleteDatabase(DB_NAME);
+        req.onsuccess = finish;
+        req.onerror = finish;
+        req.onblocked = finish;
+      } catch (_) { finish(); }
+      // never let a blocked delete stall the whole telemetry layer
+      setTimeout(finish, 3000);
+    });
+  })();
+
   function openDb() {
     if (dbPromise) return dbPromise;
-    dbPromise = new Promise((resolve, reject) => {
+    dbPromise = wipeIfNewSession.then(() => new Promise((resolve, reject) => {
       let req;
       try {
         req = indexedDB.open(DB_NAME, DB_VERSION);
@@ -112,7 +150,7 @@
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
       req.onblocked = () => reject(new Error("IndexedDB blocked"));
-    });
+    }));
     return dbPromise;
   }
 

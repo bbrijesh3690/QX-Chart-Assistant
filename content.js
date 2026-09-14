@@ -5,28 +5,23 @@
   const EXPIRED_KEY = "__QX_SHARED_EXPIRED_COUNT__";
   const HEARTBEAT_KEY = "__QX_SESSION_HEARTBEAT__";
 
-  // Boot-time session reset, on a stale heartbeat (no Quotex tab open
-  // for >15s — i.e. a browser relaunch).
+  // Boot-time reset on a stale heartbeat — no Quotex tab open for >15s,
+  // i.e. the browser was closed.
   //
-  // The asset vault holds candle series that are stale the moment the
-  // browser closes, and any pending trade references a minute whose
-  // candle is now gone, so neither can survive. The SETTLED trade log
-  // does survive: until v1.4.49 it was wiped here too, which meant the
-  // forward record reset on every relaunch and could never accumulate
-  // the few hundred settled trades the decision gate needs.
+  // v1.4.49 made the settled trade log survive a relaunch so the
+  // decision gate could accumulate enough trades. That gate has been
+  // run and the strategy retired, and the requirement now is the
+  // original one: nothing of ours outlives the browser session.
+  // Everything this extension writes is cleared here. telemetry.js
+  // deletes its IndexedDB on the same condition, before it opens it.
+  //
+  // Deliberately NOT cleared: panel position and the two sound
+  // toggles. They are UI preferences, not records of anything.
   const lastHb = parseInt(localStorage.getItem(HEARTBEAT_KEY) || "0", 10);
   if (Date.now() - lastHb > 15000) {
-    // Pending trades die with the candles they would have settled
-    // against. Count them instead of dropping them silently — a log
-    // that quietly loses trades reads as complete when it is not.
-    try {
-      const orphaned = JSON.parse(localStorage.getItem(PENDING_KEY) || "[]");
-      if (Array.isArray(orphaned) && orphaned.length > 0) {
-        const prev = parseInt(localStorage.getItem(EXPIRED_KEY) || "0", 10) || 0;
-        localStorage.setItem(EXPIRED_KEY, String(prev + orphaned.length));
-      }
-    } catch (_) {}
+    localStorage.removeItem(LOG_KEY);
     localStorage.removeItem(PENDING_KEY);
+    localStorage.removeItem(EXPIRED_KEY);
     sessionStorage.clear();
   }
   setInterval(() => {
@@ -2723,7 +2718,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.59 [S: v1.0]</small>
+          <strong>QX Assistant</strong> <small>v1.4.60 [S: v1.0]</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-sound-strong" class="qx-audio-btn" title="Toggle Strong Alerts (Triple Fanfare x3)">${strongSoundEnabled ? "S:🔊" : "S:🔇"}</button>
