@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.4.40",
-  "description": "FROZEN PLATFORM BASELINE v1.4.40 | STRATEGY v1.0.0-classic5pt: Scoped asset detection, atomic multi-window sync, and native OpenXML export.",
+  "version": "1.4.43",
+  "description": "High-performance assistant with Canvas price feed, dynamic tab detection, clean session-based logging, and native OpenXML export.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",

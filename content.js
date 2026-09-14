@@ -1,7 +1,19 @@
 (function () {
-  const VAULT_KEY = "__QX_ASSET_VAULT_V34__";
-  const LOG_KEY = "__QX_SHARED_LOG_V24__";
-  const PENDING_KEY = "__QX_SHARED_PENDING_V22__";
+  const VAULT_KEY = "__QX_ASSET_VAULT_SESSION__";
+  const LOG_KEY = "__QX_SHARED_LOG_SESSION__";
+  const PENDING_KEY = "__QX_SHARED_PENDING_SESSION__";
+  const HEARTBEAT_KEY = "__QX_SESSION_HEARTBEAT__";
+
+  // Enforce session fresh-start on browser relaunch
+  const lastHb = parseInt(localStorage.getItem(HEARTBEAT_KEY) || "0", 10);
+  if (Date.now() - lastHb > 15000) {
+    localStorage.removeItem(LOG_KEY);
+    localStorage.removeItem(PENDING_KEY);
+    sessionStorage.clear();
+  }
+  setInterval(() => {
+    localStorage.setItem(HEARTBEAT_KEY, Date.now().toString());
+  }, 2000);
 
   const assetVault = new Map();
   const globalHistoryPool = [];
@@ -327,24 +339,17 @@
       return isOtc ? `${pairMatch[1].toUpperCase()} (OTC)` : pairMatch[1].toUpperCase();
     }
 
-    const commodityMatch = s.match(/^([A-Za-z\s\.\-]+(?:\(OTC\)))$/i);
-    if (commodityMatch && !/account|profile|live|demo|up\s*down/i.test(commodityMatch[1])) {
-      return commodityMatch[1].trim();
-    }
-
     return null;
   }
 
   // ==============================================================
-  // BULLETPROOF SCOPED TAB SCANNER (FAST & LAYOUT-SAFE)
+  // DYNAMIC ACTIVE TAB DETECTOR (SUPPORTS PnL BADGES & WIDE TABS)
   // ==============================================================
   function getActiveTabFromDOM() {
-    // 1. Scoped search for leaf/near-leaf nodes that mention a currency pair or OTC asset
     const candidates = Array.from(document.querySelectorAll("div, a, button, li, span")).filter(el => {
       if (el.closest("#qx-assistant-panel")) return false;
-      if (el.children.length > 4) return false;
       const t = el.innerText || el.textContent || "";
-      return t.length >= 3 && t.length <= 45 && /[A-Z]{3}/i.test(t);
+      return t.length >= 3 && t.length <= 60 && /[A-Z]{3}\/[A-Z]{3}/i.test(t);
     });
 
     if (candidates.length === 0) return null;
@@ -353,11 +358,10 @@
     let highestScore = -1;
 
     for (const el of candidates) {
-      // Find the tab wrapper (either el itself or its parent up to 3 levels)
       let tabEl = el;
-      for (let depth = 0; depth < 3 && tabEl && tabEl !== document.body; depth++) {
+      for (let depth = 0; depth < 4 && tabEl && tabEl !== document.body; depth++) {
         const r = tabEl.getBoundingClientRect();
-        if (r.top >= 0 && r.top <= 85 && r.height >= 20 && r.height <= 65 && r.width >= 40 && r.width <= 320) {
+        if (r.top >= 0 && r.top <= 180 && r.height >= 20 && r.height <= 85 && r.width >= 50 && r.width <= 650) {
           break;
         }
         tabEl = tabEl.parentElement;
@@ -366,7 +370,7 @@
       if (!tabEl || tabEl === document.body) continue;
 
       const r = tabEl.getBoundingClientRect();
-      if (r.top < 0 || r.top > 85 || r.height < 20 || r.height > 65 || r.width < 40 || r.width > 320) continue;
+      if (r.top < 0 || r.top > 180 || r.height < 20 || r.height > 85 || r.width < 50 || r.width > 650) continue;
 
       const rawText = tabEl.innerText || tabEl.textContent || "";
       const parsed = formatCleanName(rawText);
@@ -375,27 +379,18 @@
       let score = 10;
       const cls = (tabEl.className || "") + " " + (tabEl.getAttribute("aria-selected") || "") + " " + (tabEl.getAttribute("data-active") || "");
 
-      // 1. Active class or attribute
-      if (/(active|selected|current|tab--active|is-active)/i.test(cls)) {
+      if (/(active|selected|current|tab--active|tabs__item--active|is-active)/i.test(cls)) {
         score += 50;
       }
-
-      // 2. Action elements (close button / svg cross)
       if (tabEl.querySelector("button, svg, [class*='close'], [class*='cross']")) {
         score += 30;
       }
-
-      // 3. Dark background check
-      try {
-        const bg = window.getComputedStyle(tabEl).backgroundColor;
-        const m = bg.match(/\d+/g);
-        if (m && m.length >= 3) {
-          const lum = 0.299 * m[0] + 0.587 * m[1] + 0.114 * m[2];
-          if (lum < 25) score += 30;
-        }
-      } catch (_) {}
-
-      // 4. Presence of payout percentage
+      if (tabEl.querySelector("[class*='arrow'], [class*='chevron'], [class*='select']")) {
+        score += 40;
+      }
+      if (/[+\-]\s*[\d,]+\s*[₹$€£]/.test(rawText) || /[₹$€£]\s*[+\-]\s*[\d,]+/.test(rawText)) {
+        score += 45;
+      }
       if (/\d{1,3}\s*%/.test(rawText)) {
         score += 20;
       }
@@ -430,6 +425,11 @@
     activeAsset = newName;
     state = getVaultEntry(activeAsset);
 
+    state.activeSignal = null;
+    state.activeScore = 0;
+    state.activeFlipped = false;
+    state.evalMinute = -1;
+
     tryHydrateCandles();
     reconcilePendingTrades(activeAsset, state.candles1m, state.currentCandle?.time);
     saveVault();
@@ -440,13 +440,12 @@
     }
   }
 
-  // Pointer click listener (traverses up to 6 parents)
   document.addEventListener("pointerdown", (e) => {
     if (e.target.closest("#qx-assistant-panel")) return;
     let el = e.target;
     for (let i = 0; i < 6 && el && el !== document.body; i++) {
       const text = el.innerText || el.textContent || "";
-      if (/[A-Z]{3}/i.test(text)) {
+      if (/[A-Z]{3}\/[A-Z]{3}/i.test(text)) {
         const parsed = formatCleanName(text);
         if (parsed) {
           switchAsset(parsed);
@@ -457,7 +456,6 @@
     }
   }, true);
 
-  // Gentle tab heartbeat: fast when detecting, gentle when stable
   setInterval(() => {
     const found = getActiveTabFromDOM();
     if (found && (found !== activeAsset || activeAsset === "Detecting...")) {
@@ -469,6 +467,13 @@
   // FAST TICK INGESTION
   // ==============================================================
   function ingestFastTick(price, rawText, decimals, time) {
+    if (state.livePrice !== null && Math.abs(price - state.livePrice) / state.livePrice > 1.0) {
+      const found = getActiveTabFromDOM();
+      if (found && found !== activeAsset) {
+        switchAsset(found);
+      }
+    }
+
     if (activeAsset === "Detecting...") {
       const found = getActiveTabFromDOM();
       if (found) switchAsset(found);
@@ -502,7 +507,7 @@
     } else if (minFloor > state.currentCandle.time) {
       const finishedCandle = Object.assign({}, state.currentCandle);
       state.candles1m.push(finishedCandle);
-      if (state.candles1m.length > 240) state.candles1m.shift();
+      if (state.candles1m.length > 2000) state.candles1m.shift();
 
       reconcilePendingTrades(activeAsset, state.candles1m, minFloor);
 
@@ -529,14 +534,22 @@
     if (priceEl) priceEl.textContent = state.rawPrice || price.toFixed(state.decimals);
   }
 
+  function mergeCandleArrays(existing, incoming) {
+    const map = new Map();
+    (existing || []).forEach(c => map.set(c.time, c));
+    (incoming || []).forEach(c => map.set(c.time, c));
+    const merged = Array.from(map.values()).sort((a, b) => a.time - b.time);
+    return merged.length > 2000 ? merged.slice(-2000) : merged;
+  }
+
   function ingestHistory(candles, samplePrice) {
     if (!candles || candles.length === 0) return;
 
     globalHistoryPool.unshift({ candles: candles, samplePrice: samplePrice });
-    if (globalHistoryPool.length > 25) globalHistoryPool.pop();
+    if (globalHistoryPool.length > 35) globalHistoryPool.pop();
 
     if (state.livePrice !== null && Math.abs(samplePrice - state.livePrice) / state.livePrice <= 0.25) {
-      state.candles1m = [...candles];
+      state.candles1m = mergeCandleArrays(state.candles1m, candles);
       reconcilePendingTrades(activeAsset, state.candles1m, state.currentCandle?.time);
       saveVault();
       updateUI();
@@ -545,7 +558,7 @@
 
     for (const [name, data] of assetVault.entries()) {
       if (data.livePrice !== null && Math.abs(samplePrice - data.livePrice) / data.livePrice <= 0.25) {
-        data.candles1m = [...candles];
+        data.candles1m = mergeCandleArrays(data.candles1m, candles);
         reconcilePendingTrades(name, data.candles1m, data.currentCandle?.time);
         saveVault();
         if (name === activeAsset) {
@@ -961,13 +974,12 @@
     loadLog();
     const nowStr = new Date().toLocaleTimeString();
 
-    // 1. Build Sheet 1: Forward Dashboard + Data
     const fwd = computeForwardSummary(tradeLog);
     let s1RowsXml = "";
     let s1Row = 1;
 
     s1RowsXml += `<row r="${s1Row}" ht="28" customHeight="1">
-      <c r="A${s1Row}" s="1" t="inlineStr"><is><t>FORWARD.TEST SESSION PERFORMANCE REPORT (LIVE 3-HOUR RUN)</t></is></c>
+      <c r="A${s1Row}" s="1" t="inlineStr"><is><t>FORWARD.TEST SESSION PERFORMANCE REPORT (LIVE RUN)</t></is></c>
     </row>`;
     s1Row++;
 
@@ -1097,7 +1109,6 @@
   <sheetData>${s1RowsXml}</sheetData>
 </worksheet>`;
 
-    // 2. Build Sheet 2: Backward Dashboard + Data
     const assetsToExport = [];
     if (assetVault.size > 0) {
       for (const [name, data] of assetVault.entries()) {
@@ -1436,7 +1447,7 @@
   }
 
   // ==========================================
-  // BACKTEST ENGINE WITH WICKS & SKIPPED COUNTS
+  // BACKTEST ENGINE
   // ==========================================
   function runBacktestForActiveAsset() {
     const candles = state.candles1m;
@@ -1652,7 +1663,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.40 [S: v1.0]</small>
+          <strong>QX Assistant</strong> <small>v1.4.43 [S: v1.0]</small>
         </div>
         <div id="qx-panel-controls">
           <button id="qx-btn-sound-strong" class="qx-audio-btn" title="Toggle Strong Alerts (Triple Fanfare x3)">${strongSoundEnabled ? "S:🔊" : "S:🔇"}</button>
@@ -1882,8 +1893,8 @@
       currentPairFilter = "ALL";
       currentTierFilter = "ALL";
       lastLogSignature = "";
-      localStorage.setItem(LOG_KEY, JSON.stringify([]));
-      localStorage.setItem(PENDING_KEY, JSON.stringify([]));
+      localStorage.removeItem(LOG_KEY);
+      localStorage.removeItem(PENDING_KEY);
       if (syncChannel) syncChannel.postMessage({ type: "QX_SYNC_LOG_UPDATE" });
       renderLogUI();
     });
@@ -2033,9 +2044,9 @@
       }
 
       if (signalEl) {
-        if (state.activeSignal && state.activeSignal.dir !== "NONE") {
-          signalEl.textContent = `${state.activeSignal.setup}`;
-          signalEl.style.color = state.activeSignal.color;
+        if (liveVerdict.dir !== "NONE") {
+          signalEl.textContent = `Forming: ${liveVerdict.setup}`;
+          signalEl.style.color = liveVerdict.color;
         } else {
           signalEl.textContent = `Analyzing...`;
           signalEl.style.color = "#94a3b8";
@@ -2043,17 +2054,11 @@
       }
 
       if (scoreEl) {
-        if (state.activeSignal && state.activeSignal.dir !== "NONE") {
-          scoreEl.textContent = `${state.activeScore} / 5`;
-          scoreEl.style.background = state.activeScore >= 3 
-            ? (state.activeSignal.dir === "CALL" ? "#065f46" : "#7f1d1d") 
-            : "#2d3748";
-          scoreEl.style.color = "#ffffff";
-        } else {
-          scoreEl.textContent = `${liveVerdict.score} / 5`;
-          scoreEl.style.background = "#2d3748";
-          scoreEl.style.color = "#cbd5e1";
-        }
+        scoreEl.textContent = `${liveVerdict.score} / 5`;
+        scoreEl.style.background = liveVerdict.score >= 3 
+          ? (liveVerdict.dir === "CALL" ? "#065f46" : "#7f1d1d") 
+          : "#2d3748";
+        scoreEl.style.color = liveVerdict.score >= 3 ? "#ffffff" : "#cbd5e1";
       }
     }
 

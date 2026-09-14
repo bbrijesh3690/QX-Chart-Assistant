@@ -59,14 +59,18 @@
     if (Array.isArray(item) && item.length >= 5) {
       const t = item[0];
       const timeMs = t < 1e11 ? t * 1000 : t;
-      const vals = [parseFloat(item[1]), parseFloat(item[2]), parseFloat(item[3]), parseFloat(item[4])];
-      if (vals.every(v => !isNaN(v) && v > 0)) {
+      const o = parseFloat(item[1]);
+      const c = parseFloat(item[2]); // Quotex native index 2 is Close
+      const h = parseFloat(item[3]);
+      const l = parseFloat(item[4]);
+      const allVals = [o, c, h, l].filter(v => !isNaN(v) && v > 0);
+      if (!isNaN(o) && !isNaN(c)) {
         return {
           time: Math.floor(timeMs / 60000) * 60000,
-          open: vals[0],
-          high: Math.max(...vals),
-          low: Math.min(...vals),
-          close: parseFloat(item[4] ?? item[2])
+          open: o,
+          high: Math.max(...allVals, o, c),
+          low: Math.min(...allVals, o, c),
+          close: c
         };
       }
     }
@@ -132,7 +136,7 @@
         const pkt = { candles: candles, samplePrice: samplePrice, time: Date.now() };
 
         historyRing.unshift(pkt);
-        if (historyRing.length > 25) historyRing.pop();
+        if (historyRing.length > 35) historyRing.pop();
 
         window.postMessage({ type: "QX_HISTORICAL_CANDLES", payload: pkt }, "*");
       }
