@@ -2698,7 +2698,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.57 [S: v1.0]</small>
+          <strong>QX Assistant</strong> <small>v1.4.58 [S: v1.0]</small>
           <span id="qx-tel-pill" title="Signal telemetry records stored locally (click to export CSV)">
             &#9679; <span id="qx-tel-count">0</span><span id="qx-tel-settled"></span>
           </span>
@@ -3438,21 +3438,37 @@
         signalLbl.textContent = `Signal (Renew in ${renewCountdown}s):`;
       }
 
-      // The pre-lock verdict is recomputed every 250ms off the live
-      // tick, so it flickers between CALL / PUT / Neutral many times a
-      // minute. It is also not actionable: nothing is decided until the
-      // :55 lock, and entry is the next candle's open. Showing it only
-      // created noise and an urge to read direction into what is
-      // mostly tick jitter, so it is withheld until the lock.
+      // Between locks, hold the LAST locked verdict rather than a live
+      // one. The live verdict is recomputed every 250ms off the tick and
+      // flickers between CALL / PUT / Neutral many times a minute, and
+      // it is not actionable anyway — nothing is decided until the :55
+      // lock and entry is the next candle's open. The last lock is real
+      // information: it is what was actually traded. Frozen, so it does
+      // not flicker, and bracketed so the state is unambiguous while the
+      // "Renew in Ns" label counts down to the next one.
+      const held = state.activeSignal;
       if (signalEl) {
-        signalEl.textContent = "Analyzing...";
-        signalEl.style.color = "#94a3b8";
+        if (held) {
+          signalEl.textContent = `${held.setup} [Analyzing next]`;
+          signalEl.style.color = held.color;
+        } else {
+          signalEl.textContent = "Analyzing...";
+          signalEl.style.color = "#94a3b8";
+        }
       }
 
       if (scoreEl) {
-        scoreEl.textContent = `- / 5`;
-        scoreEl.style.background = "#2d3748";
-        scoreEl.style.color = "#cbd5e1";
+        if (held) {
+          scoreEl.textContent = `${state.activeScore} / 5`;
+          scoreEl.style.background = state.activeScore >= 3
+            ? (held.dir === "CALL" ? "#065f46" : "#7f1d1d")
+            : "#2d3748";
+          scoreEl.style.color = "#ffffff";
+        } else {
+          scoreEl.textContent = `- / 5`;
+          scoreEl.style.background = "#2d3748";
+          scoreEl.style.color = "#cbd5e1";
+        }
       }
     }
 

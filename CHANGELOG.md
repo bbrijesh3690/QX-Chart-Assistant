@@ -1,6 +1,46 @@
 # Changelog
 
-## 1.4.56-quiet-panel (Current)
+## 1.4.58-hold-last-signal (Current)
+Status: UI
+
+Display only — no change to scoring, the `:55` lock, the `:58` flip gate, trade
+queuing or telemetry, verified by diff.
+
+Between locks the panel now **holds the last locked verdict** instead of
+blanking to `Analyzing...`:
+
+```
+:55 - :59    STRONG BUY [LOCKED]          4 / 5
+:00 - :54    STRONG BUY [Analyzing next]  4 / 5     ("Renew in 42s")
+```
+
+v1.4.56 hid the pre-lock verdict because it was recomputed every 250ms off the
+tick and flickered. That removed the noise but threw away real information: the
+last lock is what was actually traded. Holding it keeps the panel useful and
+still cannot flicker, because the value is frozen until the next lock. The
+bracket plus the existing "Renew in Ns" countdown makes the state unambiguous.
+
+Falls back to `Analyzing...` / `- / 5` only before the first lock of a session.
+
+---
+
+## 1.4.57-stale-marker
+
+Status: FIX
+
+`renderBacktestUI` only ran on Run and on asset switch, so a cached result
+quietly went out of date while the panel still presented it as current —
+candles keep arriving after the run. Observed live: a result computed on 247
+bars still displayed as current with 296 in the vault, no stale marker.
+
+Now re-renders when the staleness state flips, so the marker appears the moment
+it becomes true. Fires once per run, not on a timer. `btStaleShown` is declared
+with the other module state so `renderBacktestUI` cannot read it inside the
+temporal dead zone.
+
+---
+
+## 1.4.56-quiet-panel
 Status: UI
 
 Display only. No change to scoring, the `:55` lock, the `:58` flip gate, trade
