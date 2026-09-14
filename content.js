@@ -925,12 +925,17 @@
     if (!pkt) return false;
     const m = String(assetName).match(/([A-Z]{3})\/([A-Z]{3})/i);
     if (!m) return false;
-    const pair = (m[1] + m[2]).toUpperCase();
+    const a = m[1].toUpperCase(), b = m[2].toUpperCase();
+    // Quotex does not always quote the symbol in the order it displays:
+    // "USD/BRL (OTC)" arrives as BRLUSD_otc. Accept either ordering.
+    // This cannot create a false match, because the platform never
+    // lists both directions of the same pair as separate assets.
+    const forms = [a + b, b + a];
     const wantOtc = /\(OTC\)/i.test(assetName);
     const toks = (pkt.tokens || []).concat([pkt.prefix || ""]);
     for (const t of toks) {
       const n = String(t).toUpperCase().replace(/[^A-Z0-9]/g, "");
-      if (!n.includes(pair)) continue;
+      if (!forms.some(f => n.includes(f))) continue;
       if (n.includes("OTC") === wantOtc) return true;
     }
     return false;
@@ -2668,7 +2673,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.54 [S: v1.0]</small>
+          <strong>QX Assistant</strong> <small>v1.4.55 [S: v1.0]</small>
           <span id="qx-tel-pill" title="Signal telemetry records stored locally (click to export CSV)">
             &#9679; <span id="qx-tel-count">0</span><span id="qx-tel-settled"></span>
           </span>

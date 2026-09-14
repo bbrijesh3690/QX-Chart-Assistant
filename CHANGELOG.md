@@ -1,6 +1,41 @@
 # Changelog
 
-## 1.4.54-symbol-authoritative (Current)
+## 1.4.55-symbol-order (Current)
+Status: CRITICAL DATA FIX — completes v1.4.53/54
+
+Live check after v1.4.54: **13 of 15 assets matched by symbol, 2 still fell
+through to price**, and one contamination survived —
+USD/MXN (OTC) ↔ NZD/JPY (OTC), 99% identical closes over 199 bars.
+
+The cause was visible in the frame itself:
+
+```
+tokens: ["BRLUSD_otc", "period=60"]
+```
+
+**Quotex does not always quote a symbol in the order it displays it.**
+"USD/BRL (OTC)" arrives as `BRLUSD_otc`. The matcher only built `USDBRL`, never
+matched, and fell through to the price guess — which mis-filed it.
+
+### Fixed
+`packetOwnedBy` now accepts either currency ordering. This cannot create a
+false match: the platform never lists both directions of the same pair as
+separate assets, and the OTC/non-OTC check is unchanged.
+
+### Verified
+Reversed and forward orderings both match their own asset; neither cross-matches
+a different pair (BRLUSD↛USD/MXN, JPYNZD↛USD/MXN, AUDJPY and JPYAUD ↛ CAD/JPY,
+CADCHF and CHFCAD ↛ NZD/CAD); OTC separation preserved in both orders. Full
+attribution and symbol-presence suites still pass.
+
+### Note on stale vault state
+`matchMode` lives in `sessionStorage`, which survives an extension reload. After
+reloading, clear it (or open a fresh tab) before judging attribution, or you
+will be reading values written by the previous version.
+
+---
+
+## 1.4.54-symbol-authoritative
 Status: CRITICAL DATA FIX — completes v1.4.53
 
 v1.4.53 added symbol matching but kept the price fallback reachable whenever
