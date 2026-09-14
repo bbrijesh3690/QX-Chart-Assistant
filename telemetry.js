@@ -151,7 +151,40 @@
           os.createIndex("settled", "settled", { unique: false });
         }
       };
-      req.onsuccess = () => resolve(req.result);
+      req.onsuccess = () => {
+        const db = req.result;
+        // The database can exist at this version WITHOUT our store —
+        // anything that opens it by name alone creates an empty one at
+        // version 1. onupgradeneeded then never fires, and every
+        // transaction throws NotFoundError, killing telemetry silently
+        // and permanently. Heal it by reopening one version higher so
+        // the upgrade path runs.
+        if (!db.objectStoreNames.contains(STORE)) {
+          const nextVersion = db.version + 1;
+          db.close();
+          let bump;
+          try {
+            bump = indexedDB.open(DB_NAME, nextVersion);
+          } catch (e) {
+            reject(e);
+            return;
+          }
+          bump.onupgradeneeded = (ev) => {
+            const b = ev.target.result;
+            if (!b.objectStoreNames.contains(STORE)) {
+              const os = b.createObjectStore(STORE, { keyPath: "id" });
+              os.createIndex("tradeMinute", "tradeMinute", { unique: false });
+              os.createIndex("asset", "asset", { unique: false });
+              os.createIndex("settled", "settled", { unique: false });
+            }
+          };
+          bump.onsuccess = () => resolve(bump.result);
+          bump.onerror = () => reject(bump.error);
+          bump.onblocked = () => reject(new Error("IndexedDB blocked"));
+          return;
+        }
+        resolve(db);
+      };
       req.onerror = () => reject(req.error);
       req.onblocked = () => reject(new Error("IndexedDB blocked"));
     }).then(clearIfNewSession);
