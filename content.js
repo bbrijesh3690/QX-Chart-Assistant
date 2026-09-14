@@ -666,7 +666,11 @@
       }
     }
 
+    // Only packets that name no pair at all are eligible for a price
+    // guess. One that names a different pair is not ours, however close
+    // its price happens to sit.
     const near = globalHistoryPool.filter(p =>
+      !packetHasSymbol(p) &&
       p.samplePrice > 0 && Math.abs(p.samplePrice - state.livePrice) / state.livePrice <= 0.02);
     // Several packets can legitimately be the same asset (repeat fetches).
     // Ambiguity that matters is two DIFFERENT price levels qualifying.
@@ -871,10 +875,20 @@
       }
     }
 
-    // ---- 2. PRICE FALLBACK, but only when UNAMBIGUOUS -------------
-    // No symbol in the frame. Rather than guess, require exactly one
-    // asset within a tight band — if two could own it, drop the packet.
-    // Losing history is recoverable; poisoning a series is not.
+    // ---- 2. SYMBOL PRESENT BUT UNKNOWN -> DROP --------------------
+    // If the frame names a pair and none of our assets is that pair,
+    // the packet belongs to something we are not tracking. Falling
+    // through to price here is what still mis-filed CAD/CHF history
+    // under USD/BRL in v1.4.53: the symbol was right there, saying
+    // "not yours", and the price guess overrode it.
+    if (packetHasSymbol(pkt)) {
+      unattributedHistory++;
+      return;
+    }
+
+    // ---- 3. PRICE FALLBACK, only when there is NO symbol at all ---
+    // Require exactly one asset within a tight band — if two could own
+    // it, drop. Losing history is recoverable; poisoning a series is not.
     const TOL = 0.02;
     const cands = [];
     for (const [name, data] of assetVault.entries()) {
@@ -887,6 +901,21 @@
     } else {
       unattributedHistory++;
     }
+  }
+
+  // Does the frame name a currency pair at all? Numeric fields are
+  // collected as "key=value", so the "=" cheaply separates them from
+  // real symbols — otherwise "period=60" reduces to the six letters
+  // PERIOD and reads as a pair.
+  function packetHasSymbol(pkt) {
+    const toks = (pkt && pkt.tokens) || [];
+    for (const t of toks) {
+      const s = String(t);
+      if (s.indexOf("=") !== -1) continue;
+      const letters = s.toUpperCase().replace(/[^A-Z]/g, "");
+      if (/^[A-Z]{6}(OTC)?$/.test(letters)) return true;
+    }
+    return false;
   }
 
   // Does this history packet identify itself as belonging to `assetName`?
@@ -2639,7 +2668,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.53 [S: v1.0]</small>
+          <strong>QX Assistant</strong> <small>v1.4.54 [S: v1.0]</small>
           <span id="qx-tel-pill" title="Signal telemetry records stored locally (click to export CSV)">
             &#9679; <span id="qx-tel-count">0</span><span id="qx-tel-settled"></span>
           </span>

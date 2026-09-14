@@ -1,6 +1,49 @@
 # Changelog
 
-## 1.4.53-symbol-attribution (Current)
+## 1.4.54-symbol-authoritative (Current)
+Status: CRITICAL DATA FIX — completes v1.4.53
+
+v1.4.53 added symbol matching but kept the price fallback reachable whenever
+the symbol found no owner. Verified live: **13 of 15 assets matched by symbol,
+but the 2 that fell through to price were mis-filed again** —
+CAD/CHF (OTC) ↔ USD/BRL (OTC) and USD/MXN (OTC) ↔ NZD/JPY (OTC), each sharing
+100% identical closes.
+
+The symbol was present and said *"not yours"*; the price guess overrode it.
+
+### Fixed
+- A frame that names a pair we do not track is now **dropped**, never
+  price-matched. Price inference is reachable only when the frame carries no
+  symbol at all.
+- Same gate applied in `tryHydrateCandles`, which had its own price path.
+- `packetHasSymbol` distinguishes a real symbol from a numeric field: numbers
+  are collected as `key=value`, so the `=` separates them — without that,
+  `period=60` reduces to the six letters `PERIOD` and reads as a pair.
+
+### Confirmed live
+The identifier was in the frames all along, and `page-hook.js` had been
+discarding it:
+
+```
+tokens: ["USDPKR_otc", "period=60"]
+```
+
+### Verified
+Symbol-presence gate across real Quotex token shapes, plus both exact leaks
+from v1.4.53 reproduced and blocked. Full v1.4.53 attribution suite still
+passes: 15 attribution cases, foreign-block rejection with no leakage, clean
+series intact.
+
+### Store wiped
+The 39,231 contaminated rows were cleared. Note `__QX_TELEMETRY__` lives in the
+extension's ISOLATED world — it is `undefined` in the page console, so the
+documented wipe command silently fails there. Either switch the DevTools
+context to the QX Chart Assistant content script, or clear the
+`QX_TELEMETRY` IndexedDB store directly.
+
+---
+
+## 1.4.53-symbol-attribution
 Status: CRITICAL DATA FIX — invalidates all measurements up to v1.4.52
 
 ### History was being filed under the wrong asset
