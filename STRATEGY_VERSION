@@ -1,0 +1,15 @@
+STRATEGY_VERSION=v1.0.0-classic5pt
+MODEL_TYPE=5-Point Multi-Timeframe Confluence Matrix
+EVALUATION_CADENCE=250ms with :55s Lock & :58s Flip Watchdog
+
+POINT_ALLOCATION:
+- 15m Trend: Bullish (+1.5 CALL) / Bearish (+1.5 PUT)
+- 5m Trend: Bullish (+1.0 CALL) / Bearish (+1.0 PUT)
+- 1m RSI (14): <= 32 (+1.5 CALL) / >= 68 (+1.5 PUT)
+- 1m RSI Momentum: > 50 & 5m Bull (+0.5 CALL) / < 50 & 5m Bear (+0.5 PUT)
+- 20-Bar S/R Proximity: (Low - S)/Range < 0.15 (+1.0 CALL) / (R - High)/Range < 0.15 (+1.0 PUT)
+
+TIER_THRESHOLDS:
+- STRONG: Score >= 3.5
+- BIAS:   Score >= 2.5
+- NEUTRAL: Score < 2.5

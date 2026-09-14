@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "QX Chart Assistant",
   "version": "1.4.40",
-  "description": "High-performance assistant with instant asset tab detection, zero layout thrashing, dirty-checked DOM sync, and executive .xlsx dashboard export.",
+  "description": "FROZEN PLATFORM BASELINE v1.4.40 | STRATEGY v1.0.0-classic5pt: Scoped asset detection, atomic multi-window sync, and native OpenXML export.",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.quotex.com/*",
