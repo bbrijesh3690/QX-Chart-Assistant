@@ -33,9 +33,10 @@ Key internals in `content.js`:
 - Cross-tab sync via `BroadcastChannel` + `localStorage` + 500ms poll.
 - IndexedDB is origin-scoped, so all Quotex tabs share one telemetry store.
 
-## The strategy — v1.0.0-classic5pt
+## The strategy — v1.0.0-classic5pt (RETIRED — no edge, see Current state)
 
-Evaluated every 250ms. Max score 5.0.
+Evaluated every 250ms. Max score 5.0. Kept here as the specification of what
+was measured and rejected, not as a thing to tune.
 
 | Component | Weight |
 | :--- | :--- |
@@ -68,12 +69,61 @@ Therefore:
 The reason: these weights were hand-guessed. Nobody yet knows which components
 carry signal. Changing them before measuring destroys the only baseline we have.
 
-## Current state
+## Current state — the gate has been run. The strategy has no edge.
 
-- Working version **1.4.44-telemetry**. Signal path identical to v1.4.43.
-- v1.4.44 may still be **uncommitted**. Check `git status` first; commit and tag
-  `v1.4.44-telemetry` before starting new work.
-- `TELEMETRY_SCHEMA.md` documents all 63 telemetry columns and the analysis plan.
+Working version **1.4.55-symbol-order**, frozen as Milestone 10.
+
+**v1.0.0-classic5pt is finished.** Measured on 26,734 clean, symbol-attributed
+harvest rows across 24 assets:
+
+| Bucket | Decided | Rate | 95% CI |
+| :--- | :--- | :--- | :--- |
+| **ENGINE (all taken), OTC** | **16,582** | **50.4%** | **49.6 – 51.1** |
+| ENGINE STRONG | 538 | 50.2% | 46.0 – 54.4 |
+| 15m forming / closed | 24,606 | 50.1 / 50.3% | ±0.6 |
+| 5m forming / closed | 24,606 | 50.3 / 49.5% | ±0.6 |
+| RSI extreme | 3,250 | 49.8% | 48.0 – 51.5 |
+| RSI momentum | 14,206 | 50.0% | 49.2 – 50.9 |
+| S/R proximity | 9,282 | 50.4% | 49.4 – 51.4 |
+
+Break-even is **52.1–57.5%**. The engine's interval tops out at 51.1% — below
+even the most generous bar, on 16,582 trades. At an 85% payout that is
+**−6.8% of stake per trade**.
+
+**The score does not rank.** Lowest bucket (2.5–3.0) returns 51.5%; highest
+(4.5–5.0) returns 47.6%. More agreement between components produces *worse*
+predictions, so the confluence premise fails — not merely the weights.
+Reweighting cannot repair this. Per the gate: stop, change the inputs.
+
+Real pairs (1,161 decided) came in at 50.8% [47.9–53.7] — consistent, but too
+thin to stand alone.
+
+### Still open
+The **15m S/R rejection** hypothesis (v1.4.52, `S/R Test` button) has never
+been tested on clean data. It is the one live thread. Its null is calibrated
+(pivots 50.9%, rolling 51.4%, session 33.0%) — judge against that, not 50%.
+
+### Do not repeat these mistakes
+
+1. **Validate the input, not just the analysis.** The first verdict was
+   delivered on data where `ingestHistory` had spliced multiple instruments
+   into single series — CAD/CHF and NZD/CAD shared 178 identical bars. A
+   spliced series looks like noise, which returns ~50% whether or not an edge
+   exists. A planted-edge test proved the *analysis* worked and was used to
+   argue the result was sound; it said nothing about whether the candles were
+   real. Both halves need checking.
+2. **Harvesting real pairs at a weekend yields frozen candles.** Quotex keeps
+   serving bars while FX is shut; ~100% have `high == low == open == close`.
+   They silently drag any result toward the null. v1.4.52's segmentation
+   handles it, but check `frozenDropped` anyway.
+3. **A test's null is not automatically 50%.** The S/R scan returns ~51% on
+   pure noise because a level that breaks produces no rejection candle, so
+   that class of loser is never booked. Calibrate on random walks first.
+4. **`__QX_TELEMETRY__` lives in the ISOLATED world.** It is `undefined` in the
+   page console, so the wipe command silently fails there. Switch the DevTools
+   context to the content script, or clear the `QX_TELEMETRY` IndexedDB store.
+5. **Filter on `matchMode === "symbol"`.** Rows attributed by price inference
+   are the ones that carried contamination.
 
 ## Harvest — DONE in v1.4.51
 

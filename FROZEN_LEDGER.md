@@ -11,6 +11,7 @@
 | **v1.4.43** | (baseline commit) | Canvas Price Ticks, Dynamic Wide Tab Detection, Session Lifecycle | Milestone 7 |
 | **v1.4.45** | `v1.4.45-frozen` | Last version with the divergent backtest S/R probe. Frozen before unifying the scoring paths. | Milestone 8 |
 | **v1.4.48** | `v1.4.48-frozen` | Unified scoring, Wilson intervals, forward-log integrity, 15x backtest. First version where both tabs measure one strategy. | Milestone 9 |
+| **v1.4.55** | `v1.4.55-frozen` | Symbol-based history attribution. First trustworthy dataset — and the version the decision gate was finally run on. | Milestone 10 |
 
 ## Measurement baseline
 
@@ -71,3 +72,48 @@ from this version.
 
 All frozen versions are permanently archived as isolated ZIPs in:
 `E:\Qx\Brijesh\QX_Frozen_Vault\`
+
+## Milestone 10 — the gate was run, and v1.0.0-classic5pt failed it
+
+Measured on **26,734 clean rows** across 24 assets, every one attributed by
+symbol, zero contaminated pairs, 5 stray bars (0.019%) removed.
+
+**OTC, 16,582 decided trades: 50.4%, CI [49.6 – 51.1].**
+
+Break-even is 52.1–57.5% depending on payout. The interval's upper bound sits
+below even the most generous bar. No component cleared 50%: 15m 50.1/50.3,
+5m 50.3/49.5, RSI extreme 49.8, RSI momentum 50.0, S/R 50.4.
+
+**The score does not rank** — 2.5–3.0 returns 51.5%, 4.5–5.0 returns 47.6%.
+The confluence premise fails, not just the weights, so reweighting cannot
+repair it. Real pairs: 50.8% [47.9–53.7] on 1,161 decided, consistent but thin.
+
+### The verdict was delivered twice, and the first one was not valid
+
+An earlier run reported 50.3% on 4,694 trades and called the engine dead. That
+data was contaminated: `ingestHistory` guessed the owning asset from price
+proximity within 25%, and AUD/JPY sits 0.5% from CAD/JPY. CAD/CHF and NZD/CAD
+ended up sharing 178 bars with identical closes; AUD/JPY drifted 110 → 88 with
+a 30% one-minute gap.
+
+A spliced series behaves like noise, which returns ~50% regardless of whether
+an edge exists — so that verdict was unsupported even though it happened to be
+correct. It was defended on the strength of a planted-edge test that validated
+the *analysis* while saying nothing about the *input*. Both halves need
+checking, every time.
+
+The symbol was in the WebSocket frame all along (`tokens: ["USDPKR_otc", …]`);
+`page-hook.js` was discarding it. Fixed across v1.4.53–55, the last piece being
+that Quotex does not always quote a symbol in the order it displays it —
+"USD/BRL (OTC)" arrives as `BRLUSD_otc`.
+
+### Status
+
+- **v1.0.0-classic5pt is retired.** Do not tune it. Per the gate: change the
+  inputs.
+- **The 15m S/R rejection hypothesis (v1.4.52) is untested on clean data** and
+  is the one remaining live thread. Its null is calibrated — pivots 50.9%,
+  rolling 51.4%, session 33.0% — judge against that, never against 50%.
+- The measurement rig itself is sound and reusable: it detects planted edges in
+  both directions (65% momentum → 59.6%; 35% → 42.4%), reports Wilson intervals
+  against payout-aware break-even, and now records how every row was attributed.
