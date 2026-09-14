@@ -50,10 +50,19 @@
     // --- what happened --------------------------------------------
     "flipped", "executed", "settled",
     "entryTick", "entryOpen", "exitClose", "nextHigh", "nextLow", "nextDir",
-    "resolvedTs"
+    "resolvedTs",
+    // --- v1.4.50: appended, never reordered -----------------------
+    //     payout is the broker's advertised return at the moment of
+    //     the lock, scraped from the asset tab (0.92 = 92%). It moves
+    //     during the day and differs per asset, so a single global
+    //     break-even is wrong. Break-even win rate is 1/(1+payout):
+    //     0.92 -> 52.1%, 0.77 -> 56.5%. A 53% hit rate is profitable
+    //     on one asset and loss-making on another, which is why this
+    //     has to be stored per row rather than assumed.
+    "payout", "breakEven"
   ];
 
-  const SCHEMA_VERSION = 1;
+  const SCHEMA_VERSION = 2;
 
   let dbPromise = null;
   let cachedCount = 0;

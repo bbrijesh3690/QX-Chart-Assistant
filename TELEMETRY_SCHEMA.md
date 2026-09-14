@@ -119,10 +119,26 @@ than in RSI.
 | `nextDir` | `UP` / `DOWN` / `FLAT` |
 | `resolvedTs` | When settlement was written |
 
+### Economics (added v1.4.50, appended — never reorder)
+| Column | Meaning |
+| :--- | :--- |
+| `payout` | Broker's advertised return at lock time, scraped from the asset tab. `0.92` = 92%. `null` if the scrape failed. |
+| `breakEven` | `1 / (1 + payout)` — the win rate this row had to clear to be worth taking. Stored rather than derived so a row stays interpretable if the scrape later breaks. |
+
+Payouts observed on this account run **74–92%**, moving by asset and across the
+day, so break-even ranges roughly **52.1% – 57.5%**. There is no single global
+break-even, and a 53% hit rate is profitable on one asset and loss-making on
+another. Every hit rate must be compared against `breakEven` for its own rows.
+
 ## First questions to ask the data
 
 Once a few thousand settled rows exist:
 
+0. **Does anything clear its own bar?** Before any of the below: group by
+   `breakEven` (or bucket `payout`) and compare each group's Wilson lower bound
+   against it. A component that "wins 53%" has told you nothing until you know
+   whether its bar was 52.1% or 56.5%. Net units — `Σ(wins × payout) − losses` —
+   is the one number that survives mixed payouts.
 1. **Per-component lift.** For each of the five components in isolation, what is
    the hit rate when it fires versus the base rate? Any component at ~50% is
    contributing noise and its weight is unearned.

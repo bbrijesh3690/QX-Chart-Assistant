@@ -111,12 +111,56 @@ distance and by checking for duplicate candle series across assets in analysis.
 ## The decision gate
 
 After harvest, produce one table: hit rate by raw score bucket, hit rate per
-component in isolation, each with a Wilson confidence interval. Agreed in
-advance:
+component in isolation, each with a Wilson confidence interval.
 
-- **~50%** → no edge. Stop or change the inputs. Do not start reweighting.
-- **53–57%** → thin but real. Worth pursuing; find the regime carrying it.
-- **>60% out-of-sample** → strong.
+### Break-even is not 50%
+
+A binary win returns only the payout; a loss costs the whole stake. So
+
+```
+break-even win rate = 1 / (1 + payout)
+```
+
+| Payout | Break-even |
+| :--- | :--- |
+| 92% | 52.1% |
+| 87% | 53.5% |
+| 85% | 54.1% |
+| 77% | 56.5% |
+| 74% | 57.5% |
+
+Observed payouts on this account run **74–92%**, varying by asset and across
+the day. There is therefore no single global break-even, which is why `payout`
+and `breakEven` are stored per telemetry row from v1.4.50 and per trade in the
+forward log. **Judge every bucket against its own bar, never against 50%.**
+
+### The gate, restated in the only terms that matter
+
+Compare the Wilson **lower bound** against that bucket's break-even:
+
+- **Lower bound below break-even** → not demonstrated. Includes anything
+  straddling it. Stop or change the inputs. Do not start reweighting.
+- **Lower bound clears break-even by a thin margin** → real but fragile.
+  Worth pursuing; find the regime carrying it. Confirm out-of-sample before
+  believing it.
+- **Lower bound clears break-even comfortably, out-of-sample** → strong.
+
+A 53% hit rate is profitable at a 92% payout and loss-making at 77%. Reporting
+it as one number hides the only thing you needed to know.
+
+### Sample sizes this implies
+
+At an 85% payout (54.1% break-even), proving a true rate takes roughly:
+
+| True rate | Settled trades needed |
+| :--- | :--- |
+| 65% | ~80 |
+| 60% | ~270 |
+| 58% | ~610 |
+| 56% | ~2,510 |
+
+The closer the truth sits to break-even, the more brutal the cost of proving
+it. Budget for this before concluding anything.
 
 Do not skip past this gate into tuning. Tuning before the gate is fitting noise.
 

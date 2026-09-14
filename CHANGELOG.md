@@ -1,6 +1,48 @@
 # Changelog
 
-## 1.4.49-persistent-log (Current)
+## 1.4.50-payout-aware (Current)
+Status: MEASUREMENT
+
+### The decision gate was calibrated to the wrong number
+It treated ~50% as break-even. A binary win returns only the payout while a
+loss costs the whole stake, so break-even is `1 / (1 + payout)`. Payouts on
+this account run **74–93%**, which puts real break-even between **51.8% and
+57.5%** — and it moves by asset and across the day.
+
+Measured live on four tabs open at the same moment:
+
+| Asset | Payout | Break-even |
+| :--- | :--- | :--- |
+| USD/IDR | 93% | 51.8% |
+| USD/BRL | 82% | 54.9% |
+| USD/MXN | 80% | 55.6% |
+| USD/DZD | 78% | 56.2% |
+
+A 54% hit rate is profitable on USD/IDR and loss-making on USD/DZD,
+simultaneously. Most of the old gate's "53–57% → thin but real" band was in
+fact still losing money.
+
+### Added
+- `payout` and `breakEven` telemetry columns, **appended** at the end of
+  `COLUMNS` (never reordered), so older CSV exports stay compatible.
+  `SCHEMA_VERSION` → 2. Scraped from the active asset tab at lock time.
+- `payout` recorded on every queued trade, so the forward log carries it
+  through to settlement.
+- Forward summary now shows **net units** — `Σ(wins × payout) − losses` — the
+  one figure that survives mixed payouts. Tooltip states the effective
+  break-even and net P/L.
+- Backtest table colours now key off that asset's real break-even instead of a
+  hardcoded 65%/60%, with the bar stated in the footer.
+- `CLAUDE.md` gate rewritten around Wilson lower bound vs break-even, with the
+  sample sizes each true rate implies (a true 56% needs ~2,510 settled trades;
+  a true 65% needs ~80).
+
+Rows logged before v1.4.50 have no payout; the forward summary falls back to
+54.1% (an 85% payout) and says so rather than silently assuming.
+
+---
+
+## 1.4.49-persistent-log
 Status: FIX
 
 ### Fixed — the forward log reset on every browser relaunch

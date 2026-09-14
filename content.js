@@ -262,7 +262,8 @@
               exit: matchingCandle.close,
               decimals: trade.decimals,
               outcome: outcome,
-              minTime: trade.minTime
+              minTime: trade.minTime,
+              payout: trade.payout !== undefined ? trade.payout : null
             });
             logChanged = true;
           }
@@ -506,6 +507,11 @@
     return null;
   }
 
+  // Broker's advertised return for the active asset, 0.92 = 92%.
+  // Set as a side effect of getActiveTabFromDOM, which is the only
+  // place the active tab's raw text is parsed. Read at lock time.
+  let activeTabPayout = null;
+
   // ==============================================================
   // DYNAMIC ACTIVE TAB DETECTOR (SUPPORTS PnL BADGES & WIDE TABS)
   // ==============================================================
@@ -575,6 +581,7 @@
     }
 
     let bestName = null;
+    let bestPayout = null;
     let highestScore = -1;
 
     for (const siblings of byParent.values()) {
@@ -617,10 +624,17 @@
         if (score > highestScore) {
           highestScore = score;
           bestName = parsed;
+          // The payout % sits in the same tab text the name came from
+          // (formatCleanName strips it out). Captured here because this
+          // is the one place the active tab's raw text is already in
+          // hand; break-even depends on it and it moves during the day.
+          const payoutMatch = rawText.match(/(\d{1,3})\s*%/);
+          bestPayout = payoutMatch ? Number(payoutMatch[1]) / 100 : null;
         }
       }
     }
 
+    activeTabPayout = bestPayout;
     return bestName;
   }
 
@@ -759,7 +773,8 @@
           setup: state.activeSignal.setup,
           score: state.activeScore,
           entryPrice: price,
-          decimals: state.decimals !== undefined ? state.decimals : 3
+          decimals: state.decimals !== undefined ? state.decimals : 3,
+          payout: activeTabPayout
         });
       }
 
@@ -1792,6 +1807,7 @@
       maxWinStreak: bt.maxWinStreak,
       maxLossStreak: bt.maxLossStreak,
       missingBars: bt.missingBars,
+      payout: activeTabPayout,
       testedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     });
 
@@ -1820,6 +1836,15 @@
     const biasDecided = b.biasWins + b.biasLosses;
     const totalDecided = b.totalWins + b.totalLosses;
 
+    // Green means "confident this beats break-even", not "cleared an
+    // arbitrary 65%". At a 92% payout break-even is 52.1%; at 77% it is
+    // 56.5%. A flat threshold calls the same win rate a win on one
+    // asset and a loss on another.
+    const be = b.payout ? (1 / (1 + b.payout)) : 0.60;
+    const beTxt = b.payout
+      ? `${(be * 100).toFixed(1)}% break-even @ ${(b.payout * 100).toFixed(0)}% payout`
+      : `payout unknown — using ${(be * 100).toFixed(0)}% as a placeholder bar`;
+
     btContainer.innerHTML = `
       <table class="qx-log-table" style="margin-top: 2px;">
         <thead>
@@ -1835,7 +1860,7 @@
             <td><span class="qx-tier-badge qx-tier-strong">S</span> <strong>Strong</strong></td>
             <td>${b.strongCount}</td>
             <td>${b.strongWins}W - ${b.strongLosses}L ${b.strongTies > 0 ? `(${b.strongTies}T)` : ''}</td>
-            <td style="text-align: right; font-weight: 700; color: ${wrColor(b.strongWins, strongDecided, 0.65)};">
+            <td style="text-align: right; font-weight: 700; color: ${wrColor(b.strongWins, strongDecided, be)};">
               ${b.strongWr}% <span style="color: #64748b; font-weight: 500;">${fmtCi(b.strongWins, strongDecided)}</span>
             </td>
           </tr>
@@ -1843,7 +1868,7 @@
             <td><span class="qx-tier-badge qx-tier-bias">B</span> <strong>Bias</strong></td>
             <td>${b.biasCount}</td>
             <td>${b.biasWins}W - ${b.biasLosses}L ${b.biasTies > 0 ? `(${b.biasTies}T)` : ''}</td>
-            <td style="text-align: right; font-weight: 700; color: ${wrColor(b.biasWins, biasDecided, 0.60)};">
+            <td style="text-align: right; font-weight: 700; color: ${wrColor(b.biasWins, biasDecided, be)};">
               ${b.biasWr}% <span style="color: #64748b; font-weight: 500;">${fmtCi(b.biasWins, biasDecided)}</span>
             </td>
           </tr>
@@ -1851,7 +1876,7 @@
             <td><strong>Total</strong></td>
             <td><strong>${b.totalCount}</strong></td>
             <td><strong>${b.totalWins}W - ${b.totalLosses}L</strong></td>
-            <td style="text-align: right; font-weight: 700; color: ${wrColor(b.totalWins, totalDecided, 0.60)};">
+            <td style="text-align: right; font-weight: 700; color: ${wrColor(b.totalWins, totalDecided, be)};">
               ${b.totalWr}% <span style="color: #64748b; font-weight: 500;">${fmtCi(b.totalWins, totalDecided)}</span>
             </td>
           </tr>
@@ -1864,6 +1889,10 @@
         </div>
         <div style="color: #64748b; font-size: 8.5px;">
           📊 Accounting: ${b.totalCount} Traded | ${b.skippedNeutral} Neutral Skipped | 20 Warmup | 1 Unevaluated (last bar)
+        </div>
+        <div style="color: #94a3b8; font-size: 8.5px;">
+          🎯 Bar to clear: <strong>${beTxt}</strong> — 50% is not break-even.
+          Green = interval's lower bound beats it.
         </div>
         <div style="color: #64748b; font-size: 8.5px;">
           ⚠️ Overlapping 20-bar windows on consecutive minutes — these are not
@@ -1941,16 +1970,38 @@
     const tieTxt = ties > 0 ? ` (${ties}T)` : '';
     const expired = expiredCount;
 
-    summaryEl.textContent = `${totalCount}T: ${wins}W - ${losses}L${tieTxt} (${wr}% ${fmtCi(wins, totalDecided)})${expired > 0 ? ` ⚠${expired}` : ''}`;
-    summaryEl.title = `95% Wilson interval. ${totalDecided} settled trades. `
-      + `Distinguishing 60% from break-even needs ~280.`
+    // Net units at the payouts actually offered: a win returns +payout,
+    // a loss costs the whole stake. Payouts differ per asset and move
+    // during the day, so across mixed assets no single win rate answers
+    // "am I up or down" — this does.
+    let netUnits = 0, payoutKnown = 0, beSum = 0;
+    displayList.forEach(t => {
+      if (t.payout == null) return;
+      payoutKnown++;
+      beSum += 1 / (1 + t.payout);
+      if (t.outcome === "WIN") netUnits += t.payout;
+      else if (t.outcome === "LOSS") netUnits -= 1;
+    });
+    // Fallback bar is 85% payout (54.1%), mid-range for this broker.
+    const beRef = payoutKnown > 0 ? (beSum / payoutKnown) : 0.5405;
+    const netTxt = payoutKnown > 0
+      ? ` | ${netUnits >= 0 ? '+' : ''}${netUnits.toFixed(2)}u`
+      : '';
+
+    summaryEl.textContent = `${totalCount}T: ${wins}W - ${losses}L${tieTxt} (${wr}% ${fmtCi(wins, totalDecided)})${netTxt}${expired > 0 ? ` ⚠${expired}` : ''}`;
+    summaryEl.title = `95% Wilson interval on ${totalDecided} settled trades.\n`
+      + `Break-even is ${(beRef * 100).toFixed(1)}%, not 50% — a win returns only the payout, a loss costs the full stake.\n`
+      + (payoutKnown > 0
+          ? `Net ${netUnits >= 0 ? '+' : ''}${netUnits.toFixed(2)} units across ${payoutKnown} trades with a recorded payout.`
+          : `No payout recorded on these trades (logged before v1.4.50), so net P/L cannot be computed.`)
+      + `\nDistinguishing 60% from break-even needs ~280 trades.`
       + (expired > 0 ? `\n\n⚠ ${expired} trade(s) expired unsettled and are missing from this log. They skew toward assets you stopped watching, so this rate is not computed on a random sample.` : '');
 
-    // Background keys off the interval's lower bound, not the point
-    // estimate — a 75% from 3W-1L should not read as a win.
+    // Background keys off the interval's lower bound against the real
+    // break-even, not the point estimate and not a flat 50/65%.
     const w = wilson(wins, totalDecided);
     summaryEl.style.background = !w ? "#2d3748"
-      : (w.low >= 0.65 ? "#065f46" : (w.high < 0.5 ? "#7f1d1d" : "#2d3748"));
+      : (w.low >= beRef ? "#065f46" : (w.high < beRef ? "#7f1d1d" : "#2d3748"));
 
     let rowsHtml = "";
     displayList.slice(0, 5).forEach(t => {
@@ -1999,7 +2050,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.49 [S: v1.0]</small>
+          <strong>QX Assistant</strong> <small>v1.4.50 [S: v1.0]</small>
           <span id="qx-tel-pill" title="Signal telemetry records stored locally (click to export CSV)">
             &#9679; <span id="qx-tel-count">0</span><span id="qx-tel-settled"></span>
           </span>
@@ -2448,7 +2499,13 @@
         nextHigh: null,
         nextLow: null,
         nextDir: null,
-        resolvedTs: null
+        resolvedTs: null,
+
+        // Break-even is derived here rather than in analysis so a row
+        // always carries the bar it had to clear, even if the payout
+        // scrape later breaks or the tab markup changes again.
+        payout: activeTabPayout,
+        breakEven: activeTabPayout ? Number((1 / (1 + activeTabPayout)).toFixed(6)) : null
       };
 
       tel.record(row).then(ok => {
