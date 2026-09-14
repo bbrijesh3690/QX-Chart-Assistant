@@ -1,6 +1,37 @@
 # Changelog
 
-## 1.4.46-unified-scoring (Current)
+## 1.4.47-honest-stats (Current)
+Status: MEASUREMENT
+
+Display and accounting only — no change to which trades are taken, in either
+tab. Follows v1.4.46's scoring unification with the reporting discipline the
+project's own guardrails ask for.
+
+### Added
+- **Wilson 95% intervals on every win rate**, in both `Forward.test` and
+  `Backward.test`. Validated against known values (50/100 → 40.4–59.6%,
+  3/4 → 30.1–95.4%, 0/10 → 0–27.8%).
+- Colour now keys off the interval's **lower bound**, not the point estimate.
+  A 3W-1L "75%" no longer renders as a win; 168/280 at 60% correctly clears
+  break-even, matching the ~280-trade figure in the statistical guardrails.
+- Backtest footer states plainly that overlapping 20-bar windows on
+  consecutive minutes are not N independent observations, that there is no
+  flip gate, and that bars are scored fully closed where live locks at `:55`.
+- Staleness indicator when the cached backtest was run on a different bar
+  count than the asset currently holds.
+
+### Fixed
+- **Forward streaks were computed across all assets interleaved.** A "5 win
+  streak" could be four unrelated pairs that happened to settle in that order,
+  while the backtest's streaks are single-asset — so the two tabs' streak
+  numbers were silently incomparable. Streaks are now per asset in both.
+- `spanHours` was `bars / 60`, which assumes no gaps. Now uses real elapsed
+  time and reports the number of missing bars alongside it.
+- Accounting line now also accounts for the final unevaluated bar.
+
+---
+
+## 1.4.46-unified-scoring
 Status: CORRECTION — invalidates all prior backtest numbers
 
 ### Fixed

@@ -862,14 +862,45 @@
     }
   }
 
+  // Wilson score interval at 95%. A bare win rate is not evidence:
+  // 3W-1L is "75%" and means nothing at all. The decision gate in
+  // CLAUDE.md is specified in intervals, so every rate the UI shows
+  // carries one rather than inviting the point estimate to be read as
+  // a result.
+  function wilson(wins, decided) {
+    if (!decided || decided <= 0) return null;
+    const z = 1.96;
+    const z2 = z * z;
+    const p = wins / decided;
+    const denom = 1 + z2 / decided;
+    const centre = (p + z2 / (2 * decided)) / denom;
+    const margin = (z / denom) * Math.sqrt((p * (1 - p) + z2 / (4 * decided)) / decided);
+    return { p, low: Math.max(0, centre - margin), high: Math.min(1, centre + margin) };
+  }
+
+  // Green only when the interval's LOWER bound clears the threshold —
+  // i.e. when the data actually supports the claim, not when the point
+  // estimate happens to land above it.
+  function wrColor(wins, decided, threshold) {
+    const w = wilson(wins, decided);
+    if (!w) return "#64748b";
+    if (w.low >= threshold) return "#34d399";
+    if (w.high < 0.5) return "#f87171";
+    return "#e2e8f0";
+  }
+
+  function fmtCi(wins, decided) {
+    const w = wilson(wins, decided);
+    if (!w) return "n/a";
+    return `${(w.low * 100).toFixed(0)}-${(w.high * 100).toFixed(0)}%`;
+  }
+
   function computeForwardSummary(trades) {
     if (!trades || trades.length === 0) return null;
     let strongWins = 0, strongLosses = 0, strongTies = 0, strongCount = 0;
     let biasWins = 0, biasLosses = 0, biasTies = 0, biasCount = 0;
 
     const chron = trades.slice().reverse();
-    let currentWinStreak = 0, maxWinStreak = 0;
-    let currentLossStreak = 0, maxLossStreak = 0;
 
     chron.forEach(t => {
       const isStrong = t.tier === "STRONG" || (t.setup && t.setup.includes("STRONG"));
@@ -884,17 +915,31 @@
         else if (t.outcome === "LOSS") biasLosses++;
         else biasTies++;
       }
-
-      if (t.outcome === "WIN") {
-        currentWinStreak++;
-        if (currentWinStreak > maxWinStreak) maxWinStreak = currentWinStreak;
-        currentLossStreak = 0;
-      } else if (t.outcome === "LOSS") {
-        currentLossStreak++;
-        if (currentLossStreak > maxLossStreak) maxLossStreak = currentLossStreak;
-        currentWinStreak = 0;
-      }
     });
+
+    // Streaks are per asset. A "5 win streak" spanning four pairs that
+    // happened to settle in that order is four unrelated sequences read
+    // as one — the backtest's streaks are single-asset, so a mixed one
+    // here made the two tabs' streak numbers silently incomparable.
+    const byAsset = new Map();
+    chron.forEach(t => {
+      if (!byAsset.has(t.asset)) byAsset.set(t.asset, []);
+      byAsset.get(t.asset).push(t);
+    });
+
+    let maxWinStreak = 0, maxLossStreak = 0;
+    for (const series of byAsset.values()) {
+      let win = 0, loss = 0;
+      for (const t of series) {
+        if (t.outcome === "WIN") {
+          win++; loss = 0;
+          if (win > maxWinStreak) maxWinStreak = win;
+        } else if (t.outcome === "LOSS") {
+          loss++; win = 0;
+          if (loss > maxLossStreak) maxLossStreak = loss;
+        }
+      }
+    }
 
     const totalCount = strongCount + biasCount;
     const totalWins = strongWins + biasWins;
@@ -1005,14 +1050,23 @@
     const totalDecided = totalWins + totalLosses;
     const totalWr = totalDecided > 0 ? (totalWins / totalDecided) : 0;
 
-    const spanHours = (candles.length / 60).toFixed(1);
+    // Real elapsed span, not bar count / 60 — history has weekend and
+    // outage gaps, so counting bars overstates the period covered.
+    const spanMs = candles[candles.length - 1].time - candles[0].time;
+    const spanHours = (spanMs / 3600000).toFixed(1);
+
+    let missingBars = 0;
+    for (let i = 1; i < candles.length; i++) {
+      const step = candles[i].time - candles[i - 1].time;
+      if (step > 60000) missingBars += Math.round(step / 60000) - 1;
+    }
 
     return {
       strongCount, strongWins, strongLosses, strongTies, strongWr,
       biasCount, biasWins, biasLosses, biasTies, biasWr,
       totalCount, totalWins, totalLosses, totalWr,
       maxWinStreak, maxLossStreak, skippedNeutral,
-      spanHours
+      spanHours, missingBars
     };
   }
 
@@ -1654,6 +1708,7 @@
       totalWr: (bt.totalWr * 100).toFixed(1),
       maxWinStreak: bt.maxWinStreak,
       maxLossStreak: bt.maxLossStreak,
+      missingBars: bt.missingBars,
       testedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     });
 
@@ -1675,6 +1730,12 @@
     }
 
     const b = backtestCache.get(activeAsset);
+    const liveCount = state.candles1m ? state.candles1m.length : 0;
+    const isStale = liveCount !== b.candlesCount;
+
+    const strongDecided = b.strongWins + b.strongLosses;
+    const biasDecided = b.biasWins + b.biasLosses;
+    const totalDecided = b.totalWins + b.totalLosses;
 
     btContainer.innerHTML = `
       <table class="qx-log-table" style="margin-top: 2px;">
@@ -1683,7 +1744,7 @@
             <th>Tier</th>
             <th>Setups</th>
             <th>W - L (Tie)</th>
-            <th style="text-align: right;">Win Rate</th>
+            <th style="text-align: right;">Win Rate (95% CI)</th>
           </tr>
         </thead>
         <tbody>
@@ -1691,30 +1752,42 @@
             <td><span class="qx-tier-badge qx-tier-strong">S</span> <strong>Strong</strong></td>
             <td>${b.strongCount}</td>
             <td>${b.strongWins}W - ${b.strongLosses}L ${b.strongTies > 0 ? `(${b.strongTies}T)` : ''}</td>
-            <td style="text-align: right; font-weight: 700; color: ${parseFloat(b.strongWr) >= 65 ? '#34d399' : '#f87171'};">${b.strongWr}%</td>
+            <td style="text-align: right; font-weight: 700; color: ${wrColor(b.strongWins, strongDecided, 0.65)};">
+              ${b.strongWr}% <span style="color: #64748b; font-weight: 500;">${fmtCi(b.strongWins, strongDecided)}</span>
+            </td>
           </tr>
           <tr>
             <td><span class="qx-tier-badge qx-tier-bias">B</span> <strong>Bias</strong></td>
             <td>${b.biasCount}</td>
             <td>${b.biasWins}W - ${b.biasLosses}L ${b.biasTies > 0 ? `(${b.biasTies}T)` : ''}</td>
-            <td style="text-align: right; font-weight: 700; color: ${parseFloat(b.biasWr) >= 60 ? '#34d399' : '#f87171'};">${b.biasWr}%</td>
+            <td style="text-align: right; font-weight: 700; color: ${wrColor(b.biasWins, biasDecided, 0.60)};">
+              ${b.biasWr}% <span style="color: #64748b; font-weight: 500;">${fmtCi(b.biasWins, biasDecided)}</span>
+            </td>
           </tr>
           <tr style="border-top: 1px solid #2d3748; background: #131722;">
             <td><strong>Total</strong></td>
             <td><strong>${b.totalCount}</strong></td>
             <td><strong>${b.totalWins}W - ${b.totalLosses}L</strong></td>
-            <td style="text-align: right; font-weight: 700; color: ${parseFloat(b.totalWr) >= 60 ? '#38bdf8' : '#e2e8f0'};">${b.totalWr}%</td>
+            <td style="text-align: right; font-weight: 700; color: ${wrColor(b.totalWins, totalDecided, 0.60)};">
+              ${b.totalWr}% <span style="color: #64748b; font-weight: 500;">${fmtCi(b.totalWins, totalDecided)}</span>
+            </td>
           </tr>
         </tbody>
       </table>
       <div class="qx-bt-mini-footer" style="flex-direction: column; align-items: flex-start; gap: 2px;">
         <div style="width: 100%; display: flex; justify-content: space-between;">
           <span>🔥 Max Win: <strong style="color: #34d399;">${b.maxWinStreak}W</strong> | ⚠️ Max Loss: <strong style="color: #f87171;">${b.maxLossStreak}L</strong></span>
-          <span style="color: #64748b;">${b.candlesCount} bars (~${b.spanHours}h)</span>
+          <span style="color: #64748b;">${b.candlesCount} bars (${b.spanHours}h${b.missingBars > 0 ? `, ${b.missingBars} missing` : ''})</span>
         </div>
         <div style="color: #64748b; font-size: 8.5px;">
-          📊 Accounting: ${b.totalCount} Traded | ${b.skippedNeutral} Neutral Skipped | 20 Warmup
+          📊 Accounting: ${b.totalCount} Traded | ${b.skippedNeutral} Neutral Skipped | 20 Warmup | 1 Unevaluated (last bar)
         </div>
+        <div style="color: #64748b; font-size: 8.5px;">
+          ⚠️ Overlapping 20-bar windows on consecutive minutes — these are not
+          ${b.totalCount} independent observations. No flip gate, and each bar is
+          scored fully closed where live locks at :55.
+        </div>
+        ${isStale ? `<div style="color: #fbbf24; font-size: 8.5px;">↻ Stale: ran at ${b.testedAt} on ${b.candlesCount} bars, now ${liveCount}. Click Run to refresh.</div>` : ''}
       </div>
     `;
   }
@@ -1779,8 +1852,15 @@
     const wr = totalDecided > 0 ? ((wins / totalDecided) * 100).toFixed(0) : 0;
     const totalCount = wins + losses + ties;
 
-    summaryEl.textContent = ties > 0 ? `${totalCount}T: ${wins}W - ${losses}L (${ties}T) (${wr}%)` : `${totalCount}T: ${wins}W - ${losses}L (${wr}%)`;
-    summaryEl.style.background = wr >= 65 ? "#065f46" : (wr >= 50 ? "#2d3748" : "#7f1d1d");
+    const tieTxt = ties > 0 ? ` (${ties}T)` : '';
+    summaryEl.textContent = `${totalCount}T: ${wins}W - ${losses}L${tieTxt} (${wr}% ${fmtCi(wins, totalDecided)})`;
+    summaryEl.title = `95% Wilson interval. ${totalDecided} settled trades. Distinguishing 60% from break-even needs ~280.`;
+
+    // Background keys off the interval's lower bound, not the point
+    // estimate — a 75% from 3W-1L should not read as a win.
+    const w = wilson(wins, totalDecided);
+    summaryEl.style.background = !w ? "#2d3748"
+      : (w.low >= 0.65 ? "#065f46" : (w.high < 0.5 ? "#7f1d1d" : "#2d3748"));
 
     let rowsHtml = "";
     displayList.slice(0, 5).forEach(t => {
@@ -1829,7 +1909,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.46 [S: v1.0]</small>
+          <strong>QX Assistant</strong> <small>v1.4.47 [S: v1.0]</small>
           <span id="qx-tel-pill" title="Signal telemetry records stored locally (click to export CSV)">
             &#9679; <span id="qx-tel-count">0</span><span id="qx-tel-settled"></span>
           </span>
