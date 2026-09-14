@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "QX Chart Assistant",
-  "version": "1.4.56",
+  "version": "1.4.57",
   "description": "High-performance analysis assistant with Canvas price feed, multi-timeframe confluence scoring, and local-only signal telemetry for strategy measurement.",
   "permissions": [
     "storage"

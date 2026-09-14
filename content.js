@@ -44,6 +44,11 @@
   let unattributedHistory = 0;
   let spliceRejects = 0;
 
+  // Whether the backtest panel is currently displaying a stale result.
+  // Declared here rather than beside its interval so renderBacktestUI
+  // can never touch it inside the temporal dead zone.
+  let btStaleShown = null;
+
   // ==============================================================
   // TELEMETRY PLUMBING (v1.4.44) — OBSERVES ONLY
   // Nothing below this comment may influence a signal. Every call
@@ -2454,6 +2459,7 @@
     const b = backtestCache.get(activeAsset);
     const liveCount = state.candles1m ? state.candles1m.length : 0;
     const isStale = liveCount !== b.candlesCount;
+    btStaleShown = isStale;
 
     const strongDecided = b.strongWins + b.strongLosses;
     const biasDecided = b.biasWins + b.biasLosses;
@@ -2526,6 +2532,19 @@
       </div>
     `;
   }
+
+  // renderBacktestUI only runs on Run and on asset switch, so a cached
+  // result quietly went out of date while the panel still presented it
+  // as current — candles keep arriving after the run. Re-render when
+  // the staleness state actually flips (once per run, not on a timer),
+  // so the marker appears the moment it becomes true.
+  setInterval(() => {
+    if (activeTab !== "BACKTEST") return;
+    const b = backtestCache.get(activeAsset);
+    if (!b) return;
+    const live = state.candles1m ? state.candles1m.length : 0;
+    if ((live !== b.candlesCount) !== btStaleShown) renderBacktestUI();
+  }, 3000);
 
   function renderLogUI() {
     const bodyEl = document.getElementById("qx-log-body");
@@ -2679,7 +2698,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.56 [S: v1.0]</small>
+          <strong>QX Assistant</strong> <small>v1.4.57 [S: v1.0]</small>
           <span id="qx-tel-pill" title="Signal telemetry records stored locally (click to export CSV)">
             &#9679; <span id="qx-tel-count">0</span><span id="qx-tel-settled"></span>
           </span>
