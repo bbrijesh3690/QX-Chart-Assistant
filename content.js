@@ -805,7 +805,20 @@
     };
   }
 
-  function evaluateBacktestConfluence(m15Trend, m5Trend, rsi, candle, sr) {
+  // Single scoring implementation for BOTH the live path and the
+  // backtester. Until v1.4.46 these were two near-identical functions
+  // that had silently drifted apart at the S/R component: the backtester
+  // probed with the evaluated bar's wick (low/high) while live probed
+  // with a single price point. Since calcSR builds the level from a
+  // 20-bar window that INCLUDES the evaluated bar, the backtest distance
+  // was often exactly zero — the bar was the level it was measured
+  // against — and the component fired ~3x more often than it did live.
+  //
+  // srProbe is the single price the S/R distance is measured from.
+  // Live passes the current tick; the backtester passes the evaluated
+  // bar's close, which is that bar's final tick. Same arithmetic, so
+  // Forward.test and Backward.test are finally measuring one strategy.
+  function evaluateConfluence(m15Trend, m5Trend, rsi, srProbe, sr) {
     let callScore = 0;
     let putScore = 0;
 
@@ -822,55 +835,11 @@
       else if (rsi < 50 && m5Trend === "Bearish") putScore += 0.5;
     }
 
-    if (sr.s !== null && sr.r !== null) {
+    if (sr.s !== null && sr.r !== null && srProbe !== null) {
       const range = sr.r - sr.s;
       if (range > 0) {
-        const distToSupport = (candle.low - sr.s) / range;
-        const distToResistance = (sr.r - candle.high) / range;
-        if (distToSupport < 0.15) callScore += 1.0;
-        if (distToResistance < 0.15) putScore += 1.0;
-      }
-    }
-
-    // rawCall / rawPut are the UNROUNDED scores. Added in v1.4.44 for
-    // telemetry only — the displayed `score` and every tier threshold
-    // below are unchanged. A 3.5 still renders as "4 / 5" live; the raw
-    // value is what gets logged, so analysis sees the real number.
-    if (callScore >= 3.5 && callScore > putScore) {
-      return { setup: "STRONG BUY", score: Math.min(5, Math.round(callScore)), color: "#10b981", dir: "CALL", tier: "STRONG", rawCall: callScore, rawPut: putScore };
-    } else if (putScore >= 3.5 && putScore > callScore) {
-      return { setup: "STRONG PUT", score: Math.min(5, Math.round(putScore)), color: "#ef4444", dir: "PUT", tier: "STRONG", rawCall: callScore, rawPut: putScore };
-    } else if (callScore >= 2.5 && callScore > putScore) {
-      return { setup: "CALL Bias", score: Math.round(callScore), color: "#34d399", dir: "CALL", tier: "BIAS", rawCall: callScore, rawPut: putScore };
-    } else if (putScore >= 2.5 && putScore > callScore) {
-      return { setup: "PUT Bias", score: Math.round(putScore), color: "#f87171", dir: "PUT", tier: "BIAS", rawCall: callScore, rawPut: putScore };
-    } else {
-      return { setup: "Neutral", score: Math.max(callScore, putScore).toFixed(0), color: "#94a3b8", dir: "NONE", tier: "NONE", rawCall: callScore, rawPut: putScore };
-    }
-  }
-
-  function evaluateConfluence(m15Trend, m5Trend, rsi, price, sr) {
-    let callScore = 0;
-    let putScore = 0;
-
-    if (m15Trend === "Bullish") callScore += 1.5;
-    else if (m15Trend === "Bearish") putScore += 1.5;
-
-    if (m5Trend === "Bullish") callScore += 1.0;
-    else if (m5Trend === "Bearish") putScore += 1.0;
-
-    if (rsi !== null) {
-      if (rsi <= 32) callScore += 1.5;
-      else if (rsi >= 68) putScore += 1.5;
-      else if (rsi > 50 && m5Trend === "Bullish") callScore += 0.5;
-      else if (rsi < 50 && m5Trend === "Bearish") putScore += 0.5;
-    }
-
-    if (sr.s !== null && sr.r !== null && price !== null) {
-      const range = sr.r - sr.s;
-      if (range > 0) {
-        const distToSupport = (price - sr.s) / range;
-        const distToResistance = (sr.r - price) / range;
+        const distToSupport = (srProbe - sr.s) / range;
+        const distToResistance = (sr.r - srProbe) / range;
         if (distToSupport < 0.15) callScore += 1.0;
         if (distToResistance < 0.15) putScore += 1.0;
       }
@@ -983,7 +952,7 @@
         trend5m = cur5.close >= prev5.close ? "Bullish" : "Bearish";
       }
 
-      const verdict = evaluateBacktestConfluence(trend15m, trend5m, rsi, curCandle, sr);
+      const verdict = evaluateConfluence(trend15m, trend5m, rsi, curCandle.close, sr);
 
       if (verdict.dir === "NONE") {
         skippedNeutral++;
@@ -1460,7 +1429,7 @@
             trend5m = cur5.close >= prev5.close ? "Bullish" : "Bearish";
           }
 
-          const verdict = evaluateBacktestConfluence(trend15m, trend5m, rsiVal, c, srVal);
+          const verdict = evaluateConfluence(trend15m, trend5m, rsiVal, c.close, srVal);
           if (verdict.dir === "NONE") {
             sigText = `Neutral (${verdict.score}/5)`;
             outcomeText = "Skipped";
@@ -1860,7 +1829,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.45 [S: v1.0]</small>
+          <strong>QX Assistant</strong> <small>v1.4.46 [S: v1.0]</small>
           <span id="qx-tel-pill" title="Signal telemetry records stored locally (click to export CSV)">
             &#9679; <span id="qx-tel-count">0</span><span id="qx-tel-settled"></span>
           </span>

@@ -1,6 +1,48 @@
 # Changelog
 
-## 1.4.45-assetfix (Current)
+## 1.4.46-unified-scoring (Current)
+Status: CORRECTION — invalidates all prior backtest numbers
+
+### Fixed
+`Forward.test` and `Backward.test` were not measuring the same strategy, so
+their numbers were never comparable. Two near-identical scoring functions had
+silently drifted apart at the S/R component:
+
+- backtest probed with the evaluated bar's wick (`candle.low` / `candle.high`)
+- live probed with a single price point (the current tick)
+
+`calcSR` builds the level from a 20-bar window that **includes** the evaluated
+bar, so the backtest was frequently measuring a bar against a level that bar
+had itself defined — distance exactly zero, a guaranteed `+1.0`. Over 2000
+bars the component fired on 34.2% / 26.8% of bars in the backtest versus
+10.1% / 6.0% live.
+
+Both are now one `evaluateConfluence` taking an explicit `srProbe`. Live passes
+the current tick; the backtester passes the evaluated bar's close.
+
+### Impact — prior backtest results are void
+On 2000 random-walk bars (no real edge by construction), correcting the probe
+moved the STRONG tier from **143 setups at 54.5%** to **14 setups at 50.0%**.
+The old STRONG bucket was ~90% an artifact of the self-referential S/R bonus,
+and it was reporting an apparent edge on data that has none. Any conclusion
+previously drawn from a `Backward.test` STRONG win rate should be discarded,
+not compared against.
+
+### Unchanged — deliberately
+The live signal path is untouched; v1.4.43 remains a valid control. Verified
+mechanically: the surviving `evaluateConfluence` is byte-identical to the
+previous one after normalising the `price` → `srProbe` rename, and the live
+call site still passes `state.livePrice`.
+
+### Still not comparable — and not fixable from 1m OHLC
+- The backtester evaluates a **fully closed** bar; live locks at `:55` on a
+  partially formed one. Different information sets.
+- The backtester cannot model the `:58` flip gate, so live executions are a
+  subset of backtest signals, not a replica.
+
+---
+
+## 1.4.45-assetfix
 Status: FIX
 
 ### Fixed
