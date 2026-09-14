@@ -71,7 +71,7 @@ carry signal. Changing them before measuring destroys the only baseline we have.
 
 ## Current state — the gate has been run. The strategy has no edge.
 
-Working version **1.4.61-db-heal**, frozen as Milestone 11. The gate was run
+Working version **1.4.62-drop-debug-global**, frozen as Milestone 12. The gate was run
 at Milestone 10 (v1.4.55); everything since is cleanup.
 
 **v1.0.0-classic5pt is finished.** Measured on 26,734 clean, symbol-attributed

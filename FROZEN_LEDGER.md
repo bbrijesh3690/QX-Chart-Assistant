@@ -13,6 +13,7 @@
 | **v1.4.48** | `v1.4.48-frozen` | Unified scoring, Wilson intervals, forward-log integrity, 15x backtest. First version where both tabs measure one strategy. | Milestone 9 |
 | **v1.4.55** | `v1.4.55-frozen` | Symbol-based history attribution. First trustworthy dataset — and the version the decision gate was finally run on. | Milestone 10 |
 | **v1.4.61** | `v1.4.61-frozen` | Post-verdict cleanup: slim panel, session-scoped storage, nothing persists past the browser. | Milestone 11 |
+| **v1.4.62** | `v1.4.62-frozen` | Repo and surface cleanup. Honest public README, no dead files, one global left in the page's world. | Milestone 12 |
 
 ## Measurement baseline
 
@@ -171,3 +172,53 @@ empty, fresh session starting from two trades.
   `NotFoundError`: telemetry silently and permanently dead, with no symptom.
   `openDb` now detects the missing store and reopens one version higher to
   rebuild it. Verified against `fake-indexeddb`.
+
+## Milestone 12 — repo and surface cleanup (v1.4.62)
+
+No functional change. Nothing here touches scoring, the `:55` lock, the `:58`
+flip gate, trade queuing, telemetry capture or history attribution — verified
+by the attribution, symbol-presence, reversed-order and ephemeral suites.
+
+### The public repo was misrepresenting the project
+`README.md` claimed **v1.4.44**, documented a telemetry pill removed in
+v1.4.59, and presented v1.0.0-classic5pt as a working strategy — weights table
+and all, with no mention that it had been measured and failed. This repo is
+public, so anyone finding it would have taken that at face value.
+
+It now leads with the verdict and reframes the project around the part that is
+actually reusable: the measurement rig. `STRATEGY_VERSION` leads with
+`STATUS=RETIRED`, keeping the point allocation below as the record of what was
+tested.
+
+### Removed
+- `window.__QX_LAST_HISTORY_META__` — added in v1.4.53 to diagnose the
+  mis-attribution bug, unread since. It also sat in the MAIN world, so it was
+  one of only two things written where the page could read it. `tokens` and
+  `prefix` still reach `content.js` in the message payload, which is what the
+  symbol match actually reads; the global was only ever a mirror.
+- `visualizer.html` — a standalone demo of the retired engine. Verified
+  unreferenced first: `manifest.json` declares none of the keys that could load
+  a page (no `web_accessible_resources`, `action`, `options_page`,
+  `chrome_url_overrides`, `background`, `devtools_page`, `side_panel`), no
+  tracked file mentioned it, and it used none of the extension's APIs.
+  Recoverable via `git show v1.4.61-frozen:visualizer.html`.
+
+### Added
+`.gitignore` for build artifacts and panel exports. It exists mainly because
+`git add -A` would otherwise sweep the handover ZIP into a public repo — the
+older workflow used exactly that command.
+
+### Also fixed
+v1.4.59, v1.4.60 and v1.4.61 had shipped with no `CHANGELOG.md` entries, so the
+file jumped from v1.4.62 back to v1.4.58 and two versions carried a "(Current)"
+marker. Three versions of work — including the storage change and both
+IndexedDB bugs — were undocumented. Backfilled.
+
+### What remains detectable, deliberately
+`page-hook.js` must patch the page's own `WebSocket` and
+`CanvasRenderingContext2D.prototype.fillText`; that patch **is** the data tap,
+and `WebSocket.toString()` no longer reporting `[native code]` announces it in
+one line. The panel is also a real child of `document.body`. Shadow-DOM
+encapsulation and randomised IDs were considered and not done: they would break
+40 `getElementById` call sites and the injected stylesheet while leaving the
+primary tell untouched.
