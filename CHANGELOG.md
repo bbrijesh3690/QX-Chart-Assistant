@@ -1,6 +1,36 @@
 # Changelog
 
-## 1.4.47-honest-stats (Current)
+## 1.4.48-log-integrity (Current)
+Status: FIX
+
+### Fixed — forward log was silently losing trades
+`reconcilePendingTrades` skips any trade whose asset isn't the one passed in,
+and it was only ever called for the asset currently on screen. Switch away and
+a pending trade sat unsettled until you came back; if that took over two hours
+the expiry branch discarded it **without recording anything**. The log read as
+complete while missing exactly the trades belonging to assets you stopped
+watching — which is not a random sample, so the win rate was computed on a
+biased subset.
+
+- Added a 5s sweep (`reconcileAllPending`) that settles pending trades across
+  every asset in the vault, using each asset's own candles.
+- Trades that still expire unsettled are now counted and surfaced next to the
+  forward summary (`⚠N`), with a tooltip explaining the skew. Cleared by `Clr`.
+
+### Fixed — backtest blocked the UI for ~4 seconds
+The backtest loop rebuilt every indicator from bar 0 on each step (two
+Map-based aggregations, an RSI, and an S/R scan over an expanding slice) —
+O(n²), measured at **4015ms for 2000 bars** in one synchronous click handler.
+
+Now uses a trailing aggregation window, a 20-bar S/R window, and carries
+Wilder's RSI smoothing forward: **4015ms → 266ms (15x)**, and 20x on gappy
+data. Each substitution was chosen to be output-identical rather than merely
+close, and verified as such — full result sets match the previous
+implementation exactly on clean data and on data with injected gaps.
+
+---
+
+## 1.4.47-honest-stats
 Status: MEASUREMENT
 
 Display and accounting only — no change to which trades are taken, in either

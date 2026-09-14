@@ -2,6 +2,7 @@
   const VAULT_KEY = "__QX_ASSET_VAULT_SESSION__";
   const LOG_KEY = "__QX_SHARED_LOG_SESSION__";
   const PENDING_KEY = "__QX_SHARED_PENDING_SESSION__";
+  const EXPIRED_KEY = "__QX_SHARED_EXPIRED_COUNT__";
   const HEARTBEAT_KEY = "__QX_SESSION_HEARTBEAT__";
 
   // Enforce session fresh-start on browser relaunch
@@ -252,7 +253,16 @@
           return false;
         }
 
+        // Unsettleable after 2h — no candle ever arrived for that minute.
+        // Still dropped, but counted: a forward log that silently loses
+        // trades reads as complete when it isn't, and the ones it loses
+        // are not a random sample (they skew to assets you stopped
+        // watching). The count is surfaced under the log table.
         if (Date.now() - trade.minTime > 7200000) {
+          try {
+            const prev = parseInt(localStorage.getItem(EXPIRED_KEY) || "0", 10) || 0;
+            localStorage.setItem(EXPIRED_KEY, String(prev + 1));
+          } catch (_) {}
           pendingChanged = true;
           return false;
         }
@@ -277,6 +287,27 @@
       }
     } catch (_) {}
   }
+
+  // Pending trades used to settle only for the asset currently on
+  // screen (reconcilePendingTrades skips any trade whose asset isn't the
+  // one passed in). Switch away and a trade sat unsettled until you came
+  // back — and if that took over 2h the expiry above discarded it. The
+  // forward log therefore under-counted exactly the assets you stopped
+  // watching, which is not a random sample. Sweep every asset in the
+  // vault instead; each holds its own candles.
+  function reconcileAllPending() {
+    try {
+      const raw = localStorage.getItem(PENDING_KEY);
+      if (!raw || raw === "[]") return;
+      for (const [name, data] of assetVault.entries()) {
+        if (data && data.candles1m && data.candles1m.length > 0) {
+          reconcilePendingTrades(name, data.candles1m, data.currentCandle?.time);
+        }
+      }
+    } catch (_) {}
+  }
+
+  setInterval(reconcileAllPending, 5000);
 
   // ==========================================
   // WEB AUDIO SYNTHESIZER
@@ -976,13 +1007,43 @@
     let currentLossStreak = 0, maxLossStreak = 0;
 
     const warmupCount = 20;
+    const RSI_PERIOD = 14;
+
+    // The loop below used to rebuild every indicator from bar 0 on each
+    // step — two full Map-based aggregations, an RSI and an S/R scan
+    // over an expanding slice, i.e. O(n^2). At 2000 bars that is millions
+    // of operations in one synchronous click handler.
+    //
+    // Each replacement is chosen to be *output-identical*, not merely
+    // close (verified by diffing full results against the old path):
+    //  - only the last 15m bucket and last two 5m buckets are ever read,
+    //    and a bucket holds at most 15 1m bars, so a trailing window
+    //    yields the same buckets as the full history
+    //  - calcSR only ever looks at its own last 20 bars
+    //  - Wilder RSI is carried forward; the seed and each smoothing step
+    //    are the same operations in the same order as recomputing
+    const AGG_WINDOW = 60;
+
+    let avgGain = 0, avgLoss = 0;
+    for (let k = 1; k <= RSI_PERIOD; k++) {
+      const d = candles[k].close - candles[k - 1].close;
+      if (d >= 0) avgGain += d; else avgLoss += Math.abs(d);
+    }
+    avgGain /= RSI_PERIOD;
+    avgLoss /= RSI_PERIOD;
+    for (let k = RSI_PERIOD + 1; k <= warmupCount; k++) {
+      const d = candles[k].close - candles[k - 1].close;
+      avgGain = (avgGain * (RSI_PERIOD - 1) + (d >= 0 ? d : 0)) / RSI_PERIOD;
+      avgLoss = (avgLoss * (RSI_PERIOD - 1) + (d < 0 ? Math.abs(d) : 0)) / RSI_PERIOD;
+    }
+
     for (let i = warmupCount; i < candles.length - 1; i++) {
-      const subCandles = candles.slice(0, i + 1);
-      const curCandle = subCandles[subCandles.length - 1];
-      const m5 = getAggregate(subCandles, null, 5);
-      const m15 = getAggregate(subCandles, null, 15);
-      const rsi = calcRSI(subCandles, 14);
-      const sr = calcSR(subCandles);
+      const curCandle = candles[i];
+      const aggWindow = candles.slice(Math.max(0, i - AGG_WINDOW + 1), i + 1);
+      const m5 = getAggregate(aggWindow, null, 5);
+      const m15 = getAggregate(aggWindow, null, 15);
+      const rsi = avgLoss === 0 ? 100 : 100 - (100 / (1 + (avgGain / avgLoss)));
+      const sr = calcSR(candles.slice(Math.max(0, i - 19), i + 1));
 
       let trend15m = "Neutral";
       if (m15.length >= 1) {
@@ -1035,6 +1096,11 @@
           currentWinStreak = 0;
         }
       }
+
+      // Carry Wilder's smoothing to the next bar.
+      const nd = candles[i + 1].close - candles[i].close;
+      avgGain = (avgGain * (RSI_PERIOD - 1) + (nd >= 0 ? nd : 0)) / RSI_PERIOD;
+      avgLoss = (avgLoss * (RSI_PERIOD - 1) + (nd < 0 ? Math.abs(nd) : 0)) / RSI_PERIOD;
     }
 
     const totalCount = strongCount + biasCount;
@@ -1799,7 +1865,10 @@
     const tierFilterEl = document.getElementById("qx-log-tier-filter");
     if (!bodyEl || !summaryEl) return;
 
-    const sig = `${tradeLog.length}_${tradeLog[0]?.id || ''}_${tradeLog[0]?.outcome || ''}_${currentPairFilter}_${currentTierFilter}`;
+    let expiredCount = 0;
+    try { expiredCount = parseInt(localStorage.getItem(EXPIRED_KEY) || "0", 10) || 0; } catch (_) {}
+
+    const sig = `${tradeLog.length}_${tradeLog[0]?.id || ''}_${tradeLog[0]?.outcome || ''}_${currentPairFilter}_${currentTierFilter}_${expiredCount}`;
     if (sig === lastLogSignature) return;
     lastLogSignature = sig;
 
@@ -1853,8 +1922,12 @@
     const totalCount = wins + losses + ties;
 
     const tieTxt = ties > 0 ? ` (${ties}T)` : '';
-    summaryEl.textContent = `${totalCount}T: ${wins}W - ${losses}L${tieTxt} (${wr}% ${fmtCi(wins, totalDecided)})`;
-    summaryEl.title = `95% Wilson interval. ${totalDecided} settled trades. Distinguishing 60% from break-even needs ~280.`;
+    const expired = expiredCount;
+
+    summaryEl.textContent = `${totalCount}T: ${wins}W - ${losses}L${tieTxt} (${wr}% ${fmtCi(wins, totalDecided)})${expired > 0 ? ` ⚠${expired}` : ''}`;
+    summaryEl.title = `95% Wilson interval. ${totalDecided} settled trades. `
+      + `Distinguishing 60% from break-even needs ~280.`
+      + (expired > 0 ? `\n\n⚠ ${expired} trade(s) expired unsettled and are missing from this log. They skew toward assets you stopped watching, so this rate is not computed on a random sample.` : '');
 
     // Background keys off the interval's lower bound, not the point
     // estimate — a 75% from 3W-1L should not read as a win.
@@ -1909,7 +1982,7 @@
     panel.innerHTML = `
       <div id="qx-panel-header">
         <div id="qx-panel-title">
-          <strong>QX Assistant</strong> <small>v1.4.47 [S: v1.0]</small>
+          <strong>QX Assistant</strong> <small>v1.4.48 [S: v1.0]</small>
           <span id="qx-tel-pill" title="Signal telemetry records stored locally (click to export CSV)">
             &#9679; <span id="qx-tel-count">0</span><span id="qx-tel-settled"></span>
           </span>
@@ -2144,6 +2217,7 @@
       lastLogSignature = "";
       localStorage.removeItem(LOG_KEY);
       localStorage.removeItem(PENDING_KEY);
+      localStorage.removeItem(EXPIRED_KEY);
       if (syncChannel) syncChannel.postMessage({ type: "QX_SYNC_LOG_UPDATE" });
       renderLogUI();
     });
